@@ -1,7 +1,6 @@
-# StudyAI
+# AOM
 
-An AI study assistant chat app. Pick a model, ask questions, attach files
-or use voice — get streaming answers back.
+AOM is anAI study assistant chat web app. While most AI's like Claude, ChatGPT, Copilot and many more focus on the individual chat messages, AOM focuses on a file system. Intended to be used as to help study, or organize important and related chat messages, AOM will help you keep track of your chats, and AI interactions.
 
 ## Stack
 
