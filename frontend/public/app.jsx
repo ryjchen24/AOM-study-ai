@@ -1,4 +1,6 @@
 const MODELS = [
+  { id: 'gemini-flash',  name: 'Gemini Flash',  desc: 'Fast' },
+  { id: 'gemini-pro',    name: 'Gemini Pro',    desc: 'Balanced' },
   { id: 'claude-sonnet', name: 'Claude Sonnet', desc: 'Balanced' },
   { id: 'claude-haiku',  name: 'Claude Haiku',  desc: 'Fast' },
 ];
@@ -42,11 +44,10 @@ function App() {
   const [prefs, setPrefs] = React.useState(() => {
     const stored = loadPrefs();
     // Validate against the current MODELS list — a previously persisted id
-    // (e.g. "gemini-flash" from an earlier build) would otherwise crash the
-    // topbar when MODELS.find returns undefined.
+    // would otherwise crash the topbar when MODELS.find returns undefined.
     const validId = (id) => MODELS.some(m => m.id === id);
     return {
-      defaultModelId: validId(stored.defaultModelId) ? stored.defaultModelId : 'claude-sonnet',
+      defaultModelId: validId(stored.defaultModelId) ? stored.defaultModelId : 'gemini-flash',
       sendOnEnter: stored.sendOnEnter !== false, // default true
     };
   });
