@@ -6,15 +6,26 @@ AOM is an AI study assistant chat web app. While most AI's like Claude, ChatGPT,
 
 ```
 Frontend  →  React 18 + Vite 5
-Backend   →  Node + Express (proxy for AI providers)
+Backend   →  FastAPI (Python) — proxy for AI providers
 Models    →  Anthropic Claude, OpenAI GPT, Google Gemini
 ```
 
 ## Run it
 
+First time only — create the Python venv and install deps:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+After that, start the servers:
+
 ```bash
 # backend
-cd backend && npm install && npm run dev
+./backend/dev.sh
 
 # frontend (new terminal)
 cd frontend && npm install && npm run dev
