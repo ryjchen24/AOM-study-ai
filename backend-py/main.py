@@ -5,16 +5,13 @@ from typing import AsyncIterator, Literal
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 app = FastAPI()
 
-# Map UI model IDs (defined in frontend/public/app.jsx MODELS) to a provider + an
-# API-side model name. Keeping the picker labels stable and translating here means
-# the frontend doesn't need to know about provider-specific identifiers.
 MODEL_MAP: dict[str, dict[str, str]] = {
     "gemini-flash":  {"provider": "gemini",    "model": "gemini-2.0-flash"},
     "gemini-pro":    {"provider": "gemini",    "model": "gemini-1.5-pro"},
@@ -235,9 +232,6 @@ async def stream_gemini(model: str, messages: list[Message]) -> AsyncIterator[by
         ],
     }
 
-    # The streamGenerateContent endpoint with alt=sse returns a clean
-    # text/event-stream — much easier to parse than the default chunked JSON
-    # array form.
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
         f":streamGenerateContent?alt=sse&key={api_key}"
@@ -298,9 +292,9 @@ def health() -> dict:
 async def chat(req: ChatRequest):
     route = MODEL_MAP.get(req.modelId)
     if not route:
-        return {"error": f'Unknown model "{req.modelId}"'}
+        return JSONResponse({"error": f'Unknown model "{req.modelId}"'}, status_code=400)
     if not req.messages:
-        return {"error": "messages must be a non-empty array"}
+        return JSONResponse({"error": "messages must be a non-empty array"}, status_code=400)
 
     provider = route["provider"]
     model = route["model"]
