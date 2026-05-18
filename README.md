@@ -1,6 +1,6 @@
 # AOM
 
-AOM is an AI study assistant chat web app. While most AI's like Claude, ChatGPT, Copilot and many more focus on the individual chat messages, AOM focuses on a file system. Intended to be used as to help study, or organize important and related chat messages, AOM will help you keep track of your chats, and AI interactions.
+AOM is an AI study chat web app. While most AI's like Claude, ChatGPT, Copilot and many more focus on the individual chat messages, AOM focuses on a file system. Intended to be used as to help study, or organize important and related chat messages, AOM will help you keep track of your chats, and AI interactions.
 
 ## Stack
 
