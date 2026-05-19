@@ -302,6 +302,12 @@ def health() -> dict:
     }
 
 
+@app.get("/api/folders")
+async def list_folders():
+    folders = await prisma.folder.find_many(order={"order": "asc"})
+    return folders
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     route = MODEL_MAP.get(req.modelId)
