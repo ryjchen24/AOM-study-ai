@@ -8,9 +8,23 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
+from contextlib import asynccontextmanager
+
+from prisma import Prisma
+
 load_dotenv()
 
-app = FastAPI()
+prisma = Prisma()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await prisma.connect()
+    try:
+        yield
+    finally:
+        await prisma.disconnect()
+
+app = FastAPI(lifespan=lifespan)
 
 MODEL_MAP: dict[str, dict[str, str]] = {
     "gemini-flash":  {"provider": "gemini",    "model": "gemini-2.0-flash"},
