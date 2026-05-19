@@ -5,10 +5,43 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client-py"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model Folder {
+  id        String @id @default(cuid())
+  name      String
+  color     String
+  parentId  String?
+  parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id])
+  children  Folder[] @relation("FolderTree")
+  order     Int      @default(0)
+  sessions  Session[]
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  title     String
+  folderId  String?
+  folder    Folder?   @relation(fields: [folderId], references: [id])
+  model     String
+  messages  Message[]
+  updatedAt DateTime  @updatedAt
+  createdAt DateTime  @default(now())
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role        String   // "user" | "assistant"
+  text        String
+  attachments Json?
+  createdAt   DateTime @default(now())
 }
