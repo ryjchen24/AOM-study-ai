@@ -76,6 +76,12 @@ class FolderUpdate(BaseModel):
     order: int | None = None
 
 
+class SessionCreate(BaseModel):
+    title: str
+    model: str
+    folderId: str | None = None
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -316,6 +322,8 @@ def health() -> dict:
     }
 
 
+
+# ────────────────────── Folder CRUD Enpoints ───────────────────────────
 @app.get("/api/folders")
 async def list_folders():
     folders = await prisma.folder.find_many(order={"order": "asc"})
@@ -336,7 +344,35 @@ async def update_folder(folder_id: str, req: FolderUpdate):
         return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
 
+@app.delete("/api/folders/{folder_id}")
+async def delete_folder(folder_id: str):
+    folder = await prisma.folder.delete(where={"id": folder_id})
+    if folder is None:
+        return JSONResponse({"error": "folder not found"}, status_code=404)
+    return folder
+# ───────────────────────────────────────────────────────────────────────
 
+
+# ─────────────────────- Session CRUD Enpoints ──────────────────────────
+@app.get("/api/sessions")
+async def list_sessions():
+    sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
+    return sessions
+
+@app.post("/api/sessions")
+async def create_session(req: SessionCreate):
+    session = await prisma.session.create(data=req.model_dump())
+    return session
+
+
+
+# ───────────────────────────────────────────────────────────────────────
+
+
+
+# ─────────────────────- Messages CRUD Enpoints ─────────────────────────
+
+# ───────────────────────────────────────────────────────────────────────
 
 
 
