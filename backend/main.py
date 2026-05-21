@@ -316,6 +316,7 @@ def health() -> dict:
     }
 
 
+# ────────────────────── Folder CRUD Enpoints ───────────────────────────
 @app.get("/api/folders")
 async def list_folders():
     folders = await prisma.folder.find_many(order={"order": "asc"})
@@ -336,17 +337,25 @@ async def update_folder(folder_id: str, req: FolderUpdate):
         return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
 
-
 @app.delete("/api/folders/{folder_id}")
 async def delete_folder(folder_id: str):
     folder = await prisma.folder.delete(where={"id": folder_id})
     if folder is None:
         return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
+# ───────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────- Session CRUD Enpoints ──────────────────────────
+# ───────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────
 
 
 
-
+# ─────────────────────- Messages CRUD Enpoints ─────────────────────────
+# ───────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────
 
 
 
