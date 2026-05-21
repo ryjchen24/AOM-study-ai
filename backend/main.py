@@ -93,6 +93,10 @@ class MessageCreate(BaseModel):
     attachments: list[Attachment] | None = None
 
 
+class MessageDeleteBulk(BaseModel):
+    ids: list[str]
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -413,6 +417,13 @@ async def create_message(session_id: str, req: MessageCreate):
         "attachments": attachments,
     })
     return message
+
+@app.delete("/api/messages")
+async def delete_messages(req: MessageDeleteBulk):
+    if not req.ids:
+        return JSONResponse({"error": "ids must be a non-empty array"}, status_code=400)
+    count = await prisma.message.delete_many(where={"id": {"in": req.ids}})
+    return {"deleted": count}
 
 
 # ───────────────────────────────────────────────────────────────────────
