@@ -62,6 +62,13 @@ class ChatRequest(BaseModel):
     messages: list[Message]
 
 
+class FolderCreate(BaseModel):
+    name: str
+    color: str
+    parentId: str | None = None
+    order: int = 0
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -306,6 +313,13 @@ def health() -> dict:
 async def list_folders():
     folders = await prisma.folder.find_many(order={"order": "asc"})
     return folders
+
+@app.post("/api/folders")
+async def create_folder(req: FolderCreate):
+    folder = await prisma.folder.create(data=req.model_dump())
+    return folder
+
+
 
 
 @app.post("/api/chat")
