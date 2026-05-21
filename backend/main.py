@@ -82,6 +82,11 @@ class SessionCreate(BaseModel):
     folderId: str | None = None
 
 
+class SessionUpdate(BaseModel):
+    title: str | None = None
+    folderId: str | None = None
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -362,6 +367,16 @@ async def list_sessions():
 @app.post("/api/sessions")
 async def create_session(req: SessionCreate):
     session = await prisma.session.create(data=req.model_dump())
+    return session
+
+@app.patch("/api/sessions/{session_id}")
+async def update_session(session_id: str, req: SessionUpdate):
+    data = req.model_dump(exclude_unset=True)
+    if not data:
+        return JSONResponse({"error": "no fields to update"}, status_code=400)
+    session = await prisma.session.update(where={"id": session_id}, data=data)
+    if session is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
     return session
 
 
