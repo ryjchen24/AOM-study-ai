@@ -76,6 +76,12 @@ class FolderUpdate(BaseModel):
     order: int | None = None
 
 
+class SessionCreate(BaseModel):
+    title: str
+    model: str
+    folderId: str | None = None
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -352,6 +358,14 @@ async def delete_folder(folder_id: str):
 async def list_sessions():
     sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
     return sessions
+
+@app.post("/api/sessions")
+async def create_session(req: SessionCreate):
+    session = await prisma.session.create(data=req.model_dump())
+    return session
+
+
+
 # ───────────────────────────────────────────────────────────────────────
 
 
