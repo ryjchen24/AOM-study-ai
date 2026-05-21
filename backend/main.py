@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from contextlib import asynccontextmanager
 
-from prisma import Prisma
+from prisma import Prisma, Json
 
 load_dotenv()
 
@@ -85,6 +85,12 @@ class SessionCreate(BaseModel):
 class SessionUpdate(BaseModel):
     title: str | None = None
     folderId: str | None = None
+
+
+class MessageCreate(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+    attachments: list[Attachment] | None = None
 
 
 # ───────────────────────── SSE helpers ───────────────────────────────────────
@@ -396,6 +402,17 @@ async def list_messages(session_id: str):
         order={"createdAt": "asc"},
     )
     return messages
+
+@app.post("/api/sessions/{session_id}/messages")
+async def create_message(session_id: str, req: MessageCreate):
+    attachments = Json([a.model_dump() for a in req.attachments]) if req.attachments else None
+    message = await prisma.message.create(data={
+        "sessionId": session_id,
+        "role": req.role,
+        "text": req.text,
+        "attachments": attachments,
+    })
+    return message
 
 
 # ───────────────────────────────────────────────────────────────────────
