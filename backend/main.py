@@ -316,6 +316,7 @@ def health() -> dict:
     }
 
 
+
 # ────────────────────── Folder CRUD Enpoints ───────────────────────────
 @app.get("/api/folders")
 async def list_folders():
@@ -344,17 +345,19 @@ async def delete_folder(folder_id: str):
         return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
 # ───────────────────────────────────────────────────────────────────────
-# ───────────────────────────────────────────────────────────────────────
 
 
 # ─────────────────────- Session CRUD Enpoints ──────────────────────────
-# ───────────────────────────────────────────────────────────────────────
+@app.get("/api/sessions")
+async def list_sessions():
+    sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
+    return sessions
 # ───────────────────────────────────────────────────────────────────────
 
 
 
 # ─────────────────────- Messages CRUD Enpoints ─────────────────────────
-# ───────────────────────────────────────────────────────────────────────
+
 # ───────────────────────────────────────────────────────────────────────
 
 
