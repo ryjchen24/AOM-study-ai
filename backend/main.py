@@ -379,8 +379,12 @@ async def update_session(session_id: str, req: SessionUpdate):
         return JSONResponse({"error": "session not found"}, status_code=404)
     return session
 
-
-
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    session = await prisma.session.delete(where={"id": session_id})
+    if session is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return session
 # ───────────────────────────────────────────────────────────────────────
 
 
