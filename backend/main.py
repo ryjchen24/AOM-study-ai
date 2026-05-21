@@ -62,6 +62,20 @@ class ChatRequest(BaseModel):
     messages: list[Message]
 
 
+class FolderCreate(BaseModel):
+    name: str
+    color: str
+    parentId: str | None = None
+    order: int = 0
+
+
+class FolderUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+    parentId: str | None = None
+    order: int | None = None
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -306,6 +320,25 @@ def health() -> dict:
 async def list_folders():
     folders = await prisma.folder.find_many(order={"order": "asc"})
     return folders
+
+@app.post("/api/folders")
+async def create_folder(req: FolderCreate):
+    folder = await prisma.folder.create(data=req.model_dump())
+    return folder
+
+@app.patch("/api/folders/{folder_id}")
+async def update_folder(folder_id: str, req: FolderUpdate):
+    data = req.model_dump(exclude_unset=True)
+    if not data:
+        return JSONResponse({"error": "no fields to update"}, status_code=400)
+    folder = await prisma.folder.update(where={"id": folder_id}, data=data)
+    if folder is None:
+        return JSONResponse({"error": "folder not found"}, status_code=404)
+    return folder
+
+
+
+
 
 
 @app.post("/api/chat")
