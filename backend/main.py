@@ -388,8 +388,15 @@ async def delete_session(session_id: str):
 # ───────────────────────────────────────────────────────────────────────
 
 
-
 # ─────────────────────- Messages CRUD Enpoints ─────────────────────────
+@app.get("/api/sessions/{session_id}/messages")
+async def list_messages(session_id: str):
+    messages = await prisma.message.find_many(
+        where={"sessionId": session_id},
+        order={"createdAt": "asc"},
+    )
+    return messages
+
 
 # ───────────────────────────────────────────────────────────────────────
 
