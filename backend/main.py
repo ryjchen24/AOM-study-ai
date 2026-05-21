@@ -409,13 +409,14 @@ async def list_messages(session_id: str):
 
 @app.post("/api/sessions/{session_id}/messages")
 async def create_message(session_id: str, req: MessageCreate):
-    attachments = Json([a.model_dump() for a in req.attachments]) if req.attachments else None
-    message = await prisma.message.create(data={
+    data: dict = {
         "sessionId": session_id,
         "role": req.role,
         "text": req.text,
-        "attachments": attachments,
-    })
+    }
+    if req.attachments:
+        data["attachments"] = Json([a.model_dump() for a in req.attachments])
+    message = await prisma.message.create(data=data)
     return message
 
 @app.delete("/api/messages")
