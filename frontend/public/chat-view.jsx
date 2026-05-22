@@ -36,6 +36,33 @@ function renderMarkdown(text) {
   return t;
 }
 
+// Builds the bubble HTML for a message loaded from the API (which only has
+// role/text/attachments — not the optimistic html we generate on send).
+function renderMessageHtml(role, text, atts) {
+  if (role === 'assistant') return renderMarkdown(text || '') || '<p></p>';
+  const chips = (atts || []).map(a => {
+    if (a.kind === 'image' && a.data) {
+      const url = `data:${a.mime || 'image/png'};base64,${a.data}`;
+      return `<img src="${url}" alt="${escapeHtml(a.name || '')}" style="max-width:220px;max-height:160px;border-radius:6px;display:block;margin:6px 0;border:1px solid rgba(255,255,255,0.18);" />`;
+    }
+    return `<div style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 8px;background:rgba(255,255,255,0.12);border-radius:999px;margin:4px 6px 4px 0;">📎 ${escapeHtml(a.name || '')}</div>`;
+  }).join('');
+  const chipBlock = chips ? `<div>${chips}</div>` : '';
+  const textBlock = text ? `<p>${escapeHtml(text).replace(/\n/g, '<br/>')}</p>` : '';
+  return (chipBlock + textBlock) || '<p></p>';
+}
+
+function dbMessageToUi(m) {
+  const atts = Array.isArray(m.attachments) ? m.attachments : [];
+  return {
+    id: m.id,
+    role: m.role,
+    text: m.text || '',
+    attachments: atts,
+    html: renderMessageHtml(m.role, m.text || '', atts),
+  };
+}
+
 // Rough character→token heuristic. Real tokenizers vary by model; this is just
 // for the "~N tokens" hint above the send button.
 function estimateTokens(text, attachments = []) {
@@ -103,13 +130,6 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
 
   React.useEffect(() => {
     if (!session) return;
-    if (editsRef.current[session.id]) {
-      setMessages(editsRef.current[session.id]);
-    } else {
-      const seed = sampleMessages(session).map((m, i) => ({ ...m, id: `${session.id}-${i}` }));
-      editsRef.current[session.id] = seed;
-      setMessages(seed);
-    }
     // Abort any in-flight stream from a previous session.
     abortRef.current?.abort();
     abortRef.current = null;
@@ -117,6 +137,38 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     setErrorMsg(null);
     setInput('');
     setAttachments([]);
+
+    // Cached state for this session wins — avoids refetching mid-conversation
+    // and preserves any local UI state (e.g., a freshly-streamed response that
+    // we haven't navigated away from yet).
+    if (editsRef.current[session.id]) {
+      setMessages(editsRef.current[session.id]);
+      return;
+    }
+
+    // Otherwise, fetch from the API. `cancelled` guards against the user
+    // switching sessions before the fetch resolves — without it, a slow fetch
+    // for session A could clobber state for session B.
+    let cancelled = false;
+    const sid = session.id;
+    setMessages([]);
+    (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sid}/messages`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+        const ui = data.map(dbMessageToUi);
+        editsRef.current[sid] = ui;
+        setMessages(ui);
+      } catch (e) {
+        if (!cancelled) {
+          console.error('Failed to load messages', e);
+          setErrorMsg('Could not load messages for this chat.');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
   }, [session?.id]);
 
   // Auto-scroll thread to bottom on new content.
@@ -166,15 +218,43 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     return out;
   }, [messages]);
 
-  const removeTurn = (turnIdx) => {
+  const removeTurn = async (turnIdx) => {
     const { indices } = turns[turnIdx];
     const drop = new Set(indices);
-    persistMessages(messages.filter((_, i) => !drop.has(i)));
-    setConfirmTurn(null);
+    const ids = messages.filter((_, i) => drop.has(i)).map(m => m.id).filter(Boolean);
+    try {
+      if (ids.length) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages(messages.filter((_, i) => !drop.has(i)));
+      setConfirmTurn(null);
+    } catch (e) {
+      console.error('Failed to delete turn', e);
+      setErrorMsg('Could not delete that exchange.');
+    }
   };
 
-  const removeMessage = (msgIdx) => {
-    persistMessages(messages.filter((_, i) => i !== msgIdx));
+  const removeMessage = async (msgIdx) => {
+    const msg = messages[msgIdx];
+    try {
+      if (msg?.id) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [msg.id] }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages(messages.filter((_, i) => i !== msgIdx));
+    } catch (e) {
+      console.error('Failed to delete message', e);
+      setErrorMsg('Could not delete that message.');
+    }
   };
 
   const onAttachClick = () => fileInputRef.current?.click();
@@ -328,6 +408,49 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
         editsRef.current[session.id] = [...arr];
         setMessages([...arr]);
       }
+
+      // Persist the completed exchange. We do this AFTER streaming so the
+      // assistant row stores its full final text rather than partial chunks.
+      // Skip if the model returned nothing — that's not a "successful exchange."
+      if (acc) {
+        try {
+          const userResp = await fetch(`/api/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              role: 'user',
+              text: userMsg.text || '',
+              attachments: userMsg.attachments,
+            }),
+          });
+          if (!userResp.ok) throw new Error(`HTTP ${userResp.status}`);
+          const savedUser = await userResp.json();
+
+          const asstResp = await fetch(`/api/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              role: 'assistant',
+              text: acc,
+            }),
+          });
+          if (!asstResp.ok) throw new Error(`HTTP ${asstResp.status}`);
+          const savedAsst = await asstResp.json();
+
+          // Swap the temporary local ids for the DB-assigned ones so future
+          // deletes (turn / single-message / trim) can target the right rows.
+          const after = editsRef.current[session.id].map(m => {
+            if (m.id === userMsg.id) return { ...m, id: savedUser.id };
+            if (m.id === assistantMsg.id) return { ...m, id: savedAsst.id };
+            return m;
+          });
+          editsRef.current[session.id] = after;
+          setMessages(after);
+        } catch (e) {
+          console.error('Failed to persist messages', e);
+          setErrorMsg('Chat completed but the messages were not saved.');
+        }
+      }
     } catch (err) {
       if (err.name === 'AbortError') {
         // Mark assistant message as cancelled
@@ -355,9 +478,23 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     abortRef.current?.abort();
   };
 
-  const trimContext = () => {
-    persistMessages([]);
-    setConfirmTrim(false);
+  const trimContext = async () => {
+    const ids = messages.map(m => m.id).filter(Boolean);
+    try {
+      if (ids.length) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages([]);
+      setConfirmTrim(false);
+    } catch (e) {
+      console.error('Failed to trim context', e);
+      setErrorMsg('Could not trim context.');
+    }
   };
 
   const onKeyDown = (e) => {
