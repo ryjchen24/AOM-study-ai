@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from typing import AsyncIterator, Literal
 
 import httpx
@@ -372,7 +374,19 @@ async def delete_folder(folder_id: str):
 @app.get("/api/sessions")
 async def list_sessions():
     sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
-    return sessions
+    # Prisma Client Python doesn't expose `_count` aggregates in `include`, so
+    # we fan out per-session COUNT queries in parallel. N+1 but fine for the
+    # session counts we'll realistically have; can swap for a raw GROUP BY
+    # later if it ever matters.
+    counts = await asyncio.gather(*[
+        prisma.message.count(where={"sessionId": s.id}) for s in sessions
+    ])
+    result = []
+    for s, cnt in zip(sessions, counts):
+        d = s.model_dump()
+        d["messageCount"] = cnt
+        result.append(d)
+    return result
 
 @app.post("/api/sessions")
 async def create_session(req: SessionCreate):
@@ -417,6 +431,13 @@ async def create_message(session_id: str, req: MessageCreate):
     if req.attachments:
         data["attachments"] = Json([a.model_dump() for a in req.attachments])
     message = await prisma.message.create(data=data)
+    # Bump session.updatedAt so sidebar/files ordering by "last modified"
+    # reflects chat activity. Prisma's @updatedAt only fires on writes to the
+    # session row itself, not on related-row inserts.
+    await prisma.session.update(
+        where={"id": session_id},
+        data={"updatedAt": datetime.now(timezone.utc)},
+    )
     return message
 
 @app.delete("/api/messages")
