@@ -27,8 +27,9 @@ function App() {
   const [sidebarTab, setSidebarTab] = React.useState('folders');
   const [sidebarWidth, setSidebarWidth] = React.useState(264);
 
-  const [folders, setFolders] = React.useState(seedFolders);
-  const [sessions, setSessions] = React.useState(seedSessions);
+  const [folders, setFolders] = React.useState([]);
+  const [sessions, setSessions] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
 
   const [currentFolderId, setCurrentFolderId] = React.useState(null);
   const [viewMode, setViewMode] = React.useState('grid');
@@ -37,7 +38,7 @@ function App() {
   const [search, setSearch] = React.useState('');
   const [selected, setSelected] = React.useState(new Set());
 
-  const [expandedFolders, setExpandedFolders] = React.useState(new Set(['f-school', 'f-research']));
+  const [expandedFolders, setExpandedFolders] = React.useState(new Set());
 
   // Hydrate persisted prefs once. localStorage is the source of truth across
   // reloads; everything below reads from prefs state and writes back via savePrefs.
@@ -68,6 +69,36 @@ function App() {
     setToast(msg);
     setTimeout(() => setToast(t => t === msg ? null : t), 2200);
   };
+
+  // Initial hydration: load folders + sessions from the API. The seed arrays
+  // are gone, so until this resolves we render a "Loading…" placeholder to
+  // avoid flashing an empty Files view first.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [fRes, sRes] = await Promise.all([
+          fetch('/api/folders'),
+          fetch('/api/sessions'),
+        ]);
+        if (!fRes.ok || !sRes.ok) throw new Error('Bad response');
+        const [fData, sData] = await Promise.all([fRes.json(), sRes.json()]);
+        if (cancelled) return;
+        setFolders(fData);
+        // messageCount isn't persisted on the backend yet; default to 0 and let
+        // onSessionActivity bump it locally as the user chats.
+        setSessions(sData.map(s => ({ ...s, messageCount: s.messageCount ?? 0 })));
+      } catch (e) {
+        if (!cancelled) {
+          console.error('Failed to load initial data', e);
+          showToast('Could not load data — is the backend running?');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Hydrate theme from localStorage once, ignoring TWEAK_DEFAULTS' fixed value
   // so a user's last choice survives reloads.
@@ -150,86 +181,198 @@ function App() {
     setView('chat');
     setSelected(new Set());
   };
+  const createSessionAndOpen = async (folderId) => {
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'New chat',
+          model: currentModel.name,
+          folderId: folderId || null,
+        }),
+      });
+      if (!res.ok) throw new Error('create session failed');
+      const created = await res.json();
+      setSessions(s => [{ ...created, messageCount: 0 }, ...s]);
+      setActiveChatId(created.id);
+      setView('chat');
+    } catch (e) {
+      console.error(e);
+      showToast('Could not create chat');
+    }
+  };
+
   const onOpenChat = (id, folderId) => {
     if (id) {
       setActiveChatId(id);
       setView('chat');
     } else {
-      // new chat in folder
-      const newId = 'new-' + Date.now();
-      setSessions(s => [{ id: newId, title: 'New chat', folderId: folderId || null, model: currentModel.name, updatedAt: new Date().toISOString(), messageCount: 0 }, ...s]);
-      setActiveChatId(newId);
-      setView('chat');
+      createSessionAndOpen(folderId);
     }
   };
-  const onNewChat = () => {
-    const newId = 'new-' + Date.now();
-    setSessions(s => [{ id: newId, title: 'New chat', folderId: null, model: currentModel.name, updatedAt: new Date().toISOString(), messageCount: 0 }, ...s]);
-    setActiveChatId(newId);
-    setView('chat');
-  };
+  const onNewChat = () => createSessionAndOpen(null);
 
-  const onMoveChatToFolder = (chatId, folderId) => {
-    setSessions(arr => arr.map(s => s.id === chatId ? { ...s, folderId } : s));
-    if (folderId) {
-      const f = folders.find(x => x.id === folderId);
-      showToast(`Moved to ${f?.name || 'folder'}`);
-      // auto-expand target folder so the user can see where it landed
-      setExpandedFolders(prev => {
-        const next = new Set(prev); next.add(folderId);
-        let cur = f?.parentId; while (cur) { next.add(cur); const p = folders.find(x => x.id === cur); cur = p?.parentId; }
-        return next;
+  const onMoveChatToFolder = async (chatId, folderId) => {
+    try {
+      const res = await fetch(`/api/sessions/${chatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderId: folderId || null }),
       });
-    } else {
-      showToast('Removed from folder');
+      if (!res.ok) throw new Error('move failed');
+      const updated = await res.json();
+      setSessions(arr => arr.map(s => s.id === chatId ? { ...s, ...updated } : s));
+      if (folderId) {
+        const f = folders.find(x => x.id === folderId);
+        showToast(`Moved to ${f?.name || 'folder'}`);
+        // auto-expand target folder so the user can see where it landed
+        setExpandedFolders(prev => {
+          const next = new Set(prev); next.add(folderId);
+          let cur = f?.parentId; while (cur) { next.add(cur); const p = folders.find(x => x.id === cur); cur = p?.parentId; }
+          return next;
+        });
+      } else {
+        showToast('Removed from folder');
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('Could not move chat');
     }
   };
 
-  const onSetTitle = (newTitle) => {
-    if (!activeChatId) return;
-    setSessions(arr => arr.map(s => s.id === activeChatId ? { ...s, title: newTitle } : s));
+  const onSetTitle = async (newTitle) => {
+    if (!activeChatId || !newTitle?.trim()) return;
+    try {
+      const res = await fetch(`/api/sessions/${activeChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      if (!res.ok) throw new Error('rename failed');
+      const updated = await res.json();
+      setSessions(arr => arr.map(s => s.id === activeChatId ? { ...s, ...updated } : s));
+    } catch (e) {
+      console.error(e);
+      showToast('Could not rename chat');
+    }
   };
 
-  const onRenameChat = (chatId, newTitle) => {
+  const onRenameChat = async (chatId, newTitle) => {
     if (!newTitle?.trim()) return;
-    setSessions(arr => arr.map(s => s.id === chatId ? { ...s, title: newTitle.trim() } : s));
-  };
-
-  const onDeleteChat = (chatId) => {
-    setSessions(arr => arr.filter(s => s.id !== chatId));
-    setSelected(prev => { const n = new Set(prev); n.delete(chatId); return n; });
-    if (activeChatId === chatId) { setActiveChatId(null); setView('files'); }
-    showToast('Chat deleted');
-  };
-
-  const onCreateFolder = (name, color, parentId) => {
-    const id = 'f-' + Date.now();
-    const siblings = folders.filter(f => f.parentId === (parentId || null));
-    setFolders(arr => [...arr, { id, name: name.trim(), color, parentId: parentId || null, order: siblings.length }]);
-    if (parentId) {
-      setExpandedFolders(prev => { const n = new Set(prev); n.add(parentId); return n; });
+    try {
+      const res = await fetch(`/api/sessions/${chatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      if (!res.ok) throw new Error('rename failed');
+      const updated = await res.json();
+      setSessions(arr => arr.map(s => s.id === chatId ? { ...s, ...updated } : s));
+    } catch (e) {
+      console.error(e);
+      showToast('Could not rename chat');
     }
-    showToast(`Folder "${name}" created`);
-    return id;
   };
 
-  const onRenameFolder = (folderId, newName) => {
+  const onDeleteChat = async (chatId) => {
+    try {
+      const res = await fetch(`/api/sessions/${chatId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('delete failed');
+      setSessions(arr => arr.filter(s => s.id !== chatId));
+      setSelected(prev => { const n = new Set(prev); n.delete(chatId); return n; });
+      if (activeChatId === chatId) { setActiveChatId(null); setView('files'); }
+      showToast('Chat deleted');
+    } catch (e) {
+      console.error(e);
+      showToast('Could not delete chat');
+    }
+  };
+
+  const onCreateFolder = async (name, color, parentId) => {
+    const siblings = folders.filter(f => f.parentId === (parentId || null));
+    try {
+      const res = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          color,
+          parentId: parentId || null,
+          order: siblings.length,
+        }),
+      });
+      if (!res.ok) throw new Error('create folder failed');
+      const created = await res.json();
+      setFolders(arr => [...arr, created]);
+      if (parentId) {
+        setExpandedFolders(prev => { const n = new Set(prev); n.add(parentId); return n; });
+      }
+      showToast(`Folder "${name}" created`);
+      return created.id;
+    } catch (e) {
+      console.error(e);
+      showToast('Could not create folder');
+    }
+  };
+
+  const onRenameFolder = async (folderId, newName) => {
     if (!newName?.trim()) return;
-    setFolders(arr => arr.map(f => f.id === folderId ? { ...f, name: newName.trim() } : f));
+    try {
+      const res = await fetch(`/api/folders/${folderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (!res.ok) throw new Error('rename folder failed');
+      const updated = await res.json();
+      setFolders(arr => arr.map(f => f.id === folderId ? { ...f, ...updated } : f));
+    } catch (e) {
+      console.error(e);
+      showToast('Could not rename folder');
+    }
   };
 
-  const onDeleteFolder = (folderId) => {
-    // Move chats out of the deleted folder (and any subfolders) up to root
+  const onDeleteFolder = async (folderId) => {
+    // Collect target + all descendant folder ids.
     const subIds = new Set([folderId]);
     let added = true;
     while (added) {
       added = false;
       folders.forEach(f => { if (f.parentId && subIds.has(f.parentId) && !subIds.has(f.id)) { subIds.add(f.id); added = true; } });
     }
-    setSessions(arr => arr.map(s => subIds.has(s.folderId) ? { ...s, folderId: null } : s));
-    setFolders(arr => arr.filter(f => !subIds.has(f.id)));
-    if (currentFolderId && subIds.has(currentFolderId)) setCurrentFolderId(null);
-    showToast('Folder deleted');
+    try {
+      // 1. Detach every session that lives in any of these folders. The
+      //    backend schema has no ON DELETE behavior on Session.folder, so a
+      //    DELETE would otherwise fail with a foreign-key error.
+      const sessionsToDetach = sessions.filter(s => s.folderId && subIds.has(s.folderId));
+      await Promise.all(sessionsToDetach.map(s =>
+        fetch(`/api/sessions/${s.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folderId: null }),
+        }).then(r => { if (!r.ok) throw new Error('detach session failed'); })
+      ));
+
+      // 2. Delete subfolders bottom-up (children before their parents) so the
+      //    parentId FK is never left dangling.
+      const childrenOf = (id) => folders.filter(f => f.parentId === id && subIds.has(f.id));
+      const deletePostOrder = async (id) => {
+        for (const c of childrenOf(id)) await deletePostOrder(c.id);
+        const r = await fetch(`/api/folders/${id}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error('delete folder failed');
+      };
+      await deletePostOrder(folderId);
+
+      // 3. Mirror everything into local state.
+      setSessions(arr => arr.map(s => subIds.has(s.folderId) ? { ...s, folderId: null } : s));
+      setFolders(arr => arr.filter(f => !subIds.has(f.id)));
+      if (currentFolderId && subIds.has(currentFolderId)) setCurrentFolderId(null);
+      showToast('Folder deleted');
+    } catch (e) {
+      console.error(e);
+      showToast('Could not delete folder');
+    }
   };
 
   return (
@@ -270,7 +413,12 @@ function App() {
           canExport={!!activeChatId}
         />
 
-        {view === 'files' ? (
+        {loading ? (
+          <div style={{ flex: 1, display: 'grid', placeItems: 'center',
+                        color: 'var(--text-faint)', fontSize: 13 }}>
+            Loading…
+          </div>
+        ) : view === 'files' ? (
           <FilesView
             folders={folders} sessions={sessions}
             currentFolderId={currentFolderId} setCurrentFolderId={setCurrentFolderId}

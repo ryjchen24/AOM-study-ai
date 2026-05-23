@@ -36,6 +36,33 @@ function renderMarkdown(text) {
   return t;
 }
 
+// Builds the bubble HTML for a message loaded from the API (which only has
+// role/text/attachments — not the optimistic html we generate on send).
+function renderMessageHtml(role, text, atts) {
+  if (role === 'assistant') return renderMarkdown(text || '') || '<p></p>';
+  const chips = (atts || []).map(a => {
+    if (a.kind === 'image' && a.data) {
+      const url = `data:${a.mime || 'image/png'};base64,${a.data}`;
+      return `<img src="${url}" alt="${escapeHtml(a.name || '')}" style="max-width:220px;max-height:160px;border-radius:6px;display:block;margin:6px 0;border:1px solid rgba(255,255,255,0.18);" />`;
+    }
+    return `<div style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 8px;background:rgba(255,255,255,0.12);border-radius:999px;margin:4px 6px 4px 0;">📎 ${escapeHtml(a.name || '')}</div>`;
+  }).join('');
+  const chipBlock = chips ? `<div>${chips}</div>` : '';
+  const textBlock = text ? `<p>${escapeHtml(text).replace(/\n/g, '<br/>')}</p>` : '';
+  return (chipBlock + textBlock) || '<p></p>';
+}
+
+function dbMessageToUi(m) {
+  const atts = Array.isArray(m.attachments) ? m.attachments : [];
+  return {
+    id: m.id,
+    role: m.role,
+    text: m.text || '',
+    attachments: atts,
+    html: renderMessageHtml(m.role, m.text || '', atts),
+  };
+}
+
 // Rough character→token heuristic. Real tokenizers vary by model; this is just
 // for the "~N tokens" hint above the send button.
 function estimateTokens(text, attachments = []) {
@@ -103,13 +130,6 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
 
   React.useEffect(() => {
     if (!session) return;
-    if (editsRef.current[session.id]) {
-      setMessages(editsRef.current[session.id]);
-    } else {
-      const seed = sampleMessages(session).map((m, i) => ({ ...m, id: `${session.id}-${i}` }));
-      editsRef.current[session.id] = seed;
-      setMessages(seed);
-    }
     // Abort any in-flight stream from a previous session.
     abortRef.current?.abort();
     abortRef.current = null;
@@ -117,6 +137,38 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     setErrorMsg(null);
     setInput('');
     setAttachments([]);
+
+    // Cached state for this session wins — avoids refetching mid-conversation
+    // and preserves any local UI state (e.g., a freshly-streamed response that
+    // we haven't navigated away from yet).
+    if (editsRef.current[session.id]) {
+      setMessages(editsRef.current[session.id]);
+      return;
+    }
+
+    // Otherwise, fetch from the API. `cancelled` guards against the user
+    // switching sessions before the fetch resolves — without it, a slow fetch
+    // for session A could clobber state for session B.
+    let cancelled = false;
+    const sid = session.id;
+    setMessages([]);
+    (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sid}/messages`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+        const ui = data.map(dbMessageToUi);
+        editsRef.current[sid] = ui;
+        setMessages(ui);
+      } catch (e) {
+        if (!cancelled) {
+          console.error('Failed to load messages', e);
+          setErrorMsg('Could not load messages for this chat.');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
   }, [session?.id]);
 
   // Auto-scroll thread to bottom on new content.
@@ -166,15 +218,43 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     return out;
   }, [messages]);
 
-  const removeTurn = (turnIdx) => {
+  const removeTurn = async (turnIdx) => {
     const { indices } = turns[turnIdx];
     const drop = new Set(indices);
-    persistMessages(messages.filter((_, i) => !drop.has(i)));
-    setConfirmTurn(null);
+    const ids = messages.filter((_, i) => drop.has(i)).map(m => m.id).filter(Boolean);
+    try {
+      if (ids.length) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages(messages.filter((_, i) => !drop.has(i)));
+      setConfirmTurn(null);
+    } catch (e) {
+      console.error('Failed to delete turn', e);
+      setErrorMsg('Could not delete that exchange.');
+    }
   };
 
-  const removeMessage = (msgIdx) => {
-    persistMessages(messages.filter((_, i) => i !== msgIdx));
+  const removeMessage = async (msgIdx) => {
+    const msg = messages[msgIdx];
+    try {
+      if (msg?.id) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [msg.id] }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages(messages.filter((_, i) => i !== msgIdx));
+    } catch (e) {
+      console.error('Failed to delete message', e);
+      setErrorMsg('Could not delete that message.');
+    }
   };
 
   const onAttachClick = () => fileInputRef.current?.click();
@@ -328,6 +408,49 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
         editsRef.current[session.id] = [...arr];
         setMessages([...arr]);
       }
+
+      // Persist the completed exchange. We do this AFTER streaming so the
+      // assistant row stores its full final text rather than partial chunks.
+      // Skip if the model returned nothing — that's not a "successful exchange."
+      if (acc) {
+        try {
+          const userResp = await fetch(`/api/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              role: 'user',
+              text: userMsg.text || '',
+              attachments: userMsg.attachments,
+            }),
+          });
+          if (!userResp.ok) throw new Error(`HTTP ${userResp.status}`);
+          const savedUser = await userResp.json();
+
+          const asstResp = await fetch(`/api/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              role: 'assistant',
+              text: acc,
+            }),
+          });
+          if (!asstResp.ok) throw new Error(`HTTP ${asstResp.status}`);
+          const savedAsst = await asstResp.json();
+
+          // Swap the temporary local ids for the DB-assigned ones so future
+          // deletes (turn / single-message / trim) can target the right rows.
+          const after = editsRef.current[session.id].map(m => {
+            if (m.id === userMsg.id) return { ...m, id: savedUser.id };
+            if (m.id === assistantMsg.id) return { ...m, id: savedAsst.id };
+            return m;
+          });
+          editsRef.current[session.id] = after;
+          setMessages(after);
+        } catch (e) {
+          console.error('Failed to persist messages', e);
+          setErrorMsg('Chat completed but the messages were not saved.');
+        }
+      }
     } catch (err) {
       if (err.name === 'AbortError') {
         // Mark assistant message as cancelled
@@ -355,9 +478,23 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
     abortRef.current?.abort();
   };
 
-  const trimContext = () => {
-    persistMessages([]);
-    setConfirmTrim(false);
+  const trimContext = async () => {
+    const ids = messages.map(m => m.id).filter(Boolean);
+    try {
+      if (ids.length) {
+        const res = await fetch('/api/messages', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      persistMessages([]);
+      setConfirmTrim(false);
+    } catch (e) {
+      console.error('Failed to trim context', e);
+      setErrorMsg('Could not trim context.');
+    }
   };
 
   const onKeyDown = (e) => {
@@ -618,77 +755,6 @@ function EmptyChat({ model }) {
       </div>
     </div>
   );
-}
-
-function sampleMessages(session) {
-  const map = {
-    s1: [
-      { role: 'user', html: '<p>Can you explain the difference between SN1 and SN2 reactions?</p>' },
-      { role: 'assistant', html: `
-        <p>Sure — they’re both nucleophilic substitution reactions, but they differ in how the bond breaking and forming occurs.</p>
-        <p><strong>SN2 (bimolecular)</strong>: a single concerted step. The nucleophile attacks the carbon from the opposite side of the leaving group, causing inversion of configuration (like an umbrella flipping).</p>
-        <p><strong>SN1 (unimolecular)</strong>: a two-step mechanism. The leaving group departs first to form a carbocation, then the nucleophile attacks the planar intermediate from either face, giving racemic products.</p>
-        <p>Quick reference:</p>
-        <ul>
-          <li>SN2 favors <em>primary</em> substrates and strong nucleophiles</li>
-          <li>SN1 favors <em>tertiary</em> substrates and polar protic solvents</li>
-          <li>SN2 rate depends on <code>[substrate][Nu]</code>; SN1 only on <code>[substrate]</code></li>
-        </ul>
-      ` },
-      { role: 'user', html: '<p>What about secondary substrates? Which one wins?</p>' },
-      { role: 'assistant', html: `
-        <p>Secondary substrates are the gray zone — both pathways are possible, and the outcome depends on conditions:</p>
-        <ul>
-          <li><strong>Strong nucleophile + aprotic solvent</strong> (e.g. DMSO, acetone) → SN2 dominates</li>
-          <li><strong>Weak nucleophile + protic solvent</strong> (e.g. water, methanol) → SN1 dominates</li>
-        </ul>
-        <p>You can also see mixed kinetics in many real reactions. If you see partial racemization, that’s a tell that some SN1 character is sneaking in.</p>
-      ` },
-    ],
-    s4: [
-      { role: 'user', html: '<p>Walk me through ∫ x·e^x dx using integration by parts.</p>' },
-      { role: 'assistant', html: `
-        <p>Let’s use the formula <code>∫ u dv = uv − ∫ v du</code>.</p>
-        <p>Pick:</p>
-        <ul>
-          <li><code>u = x</code> → <code>du = dx</code></li>
-          <li><code>dv = e^x dx</code> → <code>v = e^x</code></li>
-        </ul>
-        <p>Substituting:</p>
-        <p><code>∫ x·e^x dx = x·e^x − ∫ e^x dx = x·e^x − e^x + C = e^x(x − 1) + C</code></p>
-        <p>The trick is choosing <code>u</code> via <strong>LIATE</strong> (Logarithmic, Inverse trig, Algebraic, Trig, Exponential) — algebraic beats exponential, so <code>x</code> goes as <code>u</code>.</p>
-      ` },
-      { role: 'user', html: '<p>Got it. Try ∫ x²·sin(x) dx — feels like I’ll need it twice.</p>' },
-      { role: 'assistant', html: `
-        <p>Yep, two passes. First round: <code>u = x²</code>, <code>dv = sin(x) dx</code> → <code>du = 2x dx</code>, <code>v = −cos(x)</code>.</p>
-        <p>So <code>∫ x²·sin(x) dx = −x²·cos(x) + 2∫ x·cos(x) dx</code>.</p>
-        <p>Second round on <code>∫ x·cos(x) dx</code>: <code>u = x</code>, <code>dv = cos(x) dx</code> → gives <code>x·sin(x) + cos(x)</code>.</p>
-        <p>Combine: <code>−x²·cos(x) + 2x·sin(x) + 2·cos(x) + C</code>.</p>
-      ` },
-    ],
-    s12: [
-      { role: 'user', html: '<p>Summarize the key innovations in attention mechanisms since 2017.</p>' },
-      { role: 'assistant', html: `
-        <p>A rough timeline of attention milestones:</p>
-        <ul>
-          <li><strong>2017 — Vaswani et al.</strong>: scaled dot-product attention + multi-head attention. Replaced recurrence with parallelizable self-attention.</li>
-          <li><strong>2019 — Sparse Transformers</strong>: factorized attention patterns to extend context.</li>
-          <li><strong>2020 — Linformer / Performer</strong>: linear-complexity approximations via low-rank or kernel feature maps.</li>
-          <li><strong>2022 — FlashAttention</strong>: IO-aware exact attention. Massive practical speedup, no quality tradeoff.</li>
-          <li><strong>2023+ — Sliding-window + ring attention</strong>: long-context inference at million-token scale.</li>
-        </ul>
-        <p>Want me to expand on any of these or pull citations?</p>
-      ` },
-    ],
-  };
-  // Seed-data demo sessions keep their HTML; new sessions start empty.
-  const seeded = map[session.id];
-  if (seeded) return seeded.map(m => ({ ...m, text: stripHtml(m.html) }));
-  return [];
-}
-
-function stripHtml(html) {
-  return String(html || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
 window.ChatView = ChatView;
