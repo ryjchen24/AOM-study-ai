@@ -369,7 +369,6 @@ async def delete_folder(folder_id: str):
     return folder
 # ───────────────────────────────────────────────────────────────────────
 
-
 # ─────────────────────- Session CRUD Enpoints ──────────────────────────
 @app.get("/api/sessions")
 async def list_sessions():
@@ -410,7 +409,6 @@ async def delete_session(session_id: str):
         return JSONResponse({"error": "session not found"}, status_code=404)
     return session
 # ───────────────────────────────────────────────────────────────────────
-
 
 # ─────────────────────- Messages CRUD Enpoints ─────────────────────────
 @app.get("/api/sessions/{session_id}/messages")
