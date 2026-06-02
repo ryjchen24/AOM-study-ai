@@ -13,6 +13,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  folders      Folder[]
+  sessions     Session[]
+  createdAt    DateTime @default(now())
+}
+
 model Folder {
   id        String @id @default(cuid())
   name      String
@@ -22,6 +32,8 @@ model Folder {
   children  Folder[] @relation("FolderTree")
   order     Int      @default(0)
   sessions  Session[]
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 }
 
@@ -32,6 +44,8 @@ model Session {
   folder    Folder?   @relation(fields: [folderId], references: [id])
   model     String
   messages  Message[]
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   updatedAt DateTime  @updatedAt
   createdAt DateTime  @default(now())
 }
