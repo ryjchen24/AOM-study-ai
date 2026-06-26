@@ -1,18 +1,22 @@
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import AsyncIterator, Literal
 
+import bcrypt
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 from contextlib import asynccontextmanager
 
 from prisma import Prisma, Json
+from prisma.errors import UniqueViolationError
 
 load_dotenv()
 
@@ -27,6 +31,34 @@ async def lifespan(app: FastAPI):
         await prisma.disconnect()
 
 app = FastAPI(lifespan=lifespan)
+
+# ───────────────────────── session cookie ────────────────────────────────────
+# Signed (not encrypted) cookie holding only `user_id`. itsdangerous signs it
+# with SESSION_SECRET so a client can't forge it. We fail fast if the secret is
+# missing rather than fall back to a hardcoded default — a predictable secret
+# means anyone can mint a valid session for any user.
+SESSION_SECRET = os.environ.get("SESSION_SECRET")
+if not SESSION_SECRET:
+    raise RuntimeError(
+        "SESSION_SECRET is not set. Generate one with "
+        "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"` "
+        "and add it to backend/.env"
+    )
+
+# In production (HTTPS) set COOKIE_SECURE=true so the cookie is never sent over
+# plain HTTP. Left false in local dev because the Vite proxy serves over http.
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie="studyai_session",
+    same_site="lax",        # don't send the cookie on cross-site POSTs → CSRF defense
+    https_only=COOKIE_SECURE,
+    max_age=60 * 60 * 24 * 14,  # 14 days
+)
+# SessionMiddleware always sets HttpOnly, so client JS (and thus XSS) can't read
+# the cookie — nothing more to configure for that.
 
 MODEL_MAP: dict[str, dict[str, str]] = {
     "gemini-flash":  {"provider": "gemini",    "model": "gemini-2.0-flash"},
@@ -97,6 +129,72 @@ class MessageCreate(BaseModel):
 
 class MessageDeleteBulk(BaseModel):
     ids: list[str]
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    displayName: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+# ───────────────────────── auth helpers ──────────────────────────────────────
+# Password rules: bcrypt only hashes the first 72 BYTES of input and silently
+# ignores the rest, so we reject anything longer instead of letting two
+# different passwords that share a 72-byte prefix both authenticate.
+PASSWORD_MIN_LEN = 8
+PASSWORD_MAX_BYTES = 72
+DISPLAY_NAME_MAX_LEN = 80
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# A throwaway hash we verify against when an email doesn't exist, so login takes
+# the same ~time whether or not the account is real. Without this, response
+# timing leaks which emails are registered (user enumeration).
+_DUMMY_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).decode("utf-8")
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _validate_password(password: str) -> None:
+    if len(password) < PASSWORD_MIN_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {PASSWORD_MIN_LEN} characters.",
+        )
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at most {PASSWORD_MAX_BYTES} bytes.",
+        )
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        # Malformed stored hash — treat as a failed login, never a 500.
+        return False
+
+
+def public_user(user) -> dict:
+    # The ONLY shape a user is ever serialized to the client. passwordHash is
+    # deliberately absent so it can never leak through an endpoint response.
+    return {
+        "id": user.id,
+        "email": user.email,
+        "displayName": user.displayName,
+        "createdAt": user.createdAt,
+    }
 
 
 # ───────────────────────── SSE helpers ───────────────────────────────────────
@@ -322,8 +420,9 @@ def root() -> str:
     return (
         "StudyAI backend is running.\n\n"
         "Endpoints:\n"
-        "  GET  /api/health  — provider key status\n"
-        "  POST /api/chat    — streaming chat (used by the frontend)\n"
+        "  GET  /api/health   — provider key status\n"
+        "  POST /api/auth/*   — signup / login / logout / me\n"
+        "  POST /api/chat     — streaming chat (used by the frontend)\n"
     )
 
 
@@ -338,6 +437,85 @@ def health() -> dict:
         },
     }
 
+
+
+# ───────────────────────── Auth Endpoints ──────────────────────────────
+# Identity is established here and carried in the signed session cookie. No
+# endpoint trusts a user id from the request body — it always comes from the
+# session (see request.session["user_id"]). require_user (Step 3.4) and
+# per-user query scoping (Step 3.5) build on top of these.
+
+@app.post("/api/auth/signup")
+async def signup(req: SignupRequest, request: Request):
+    email = _normalize_email(req.email)
+    if not EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+
+    display_name = req.displayName.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name is required.")
+    if len(display_name) > DISPLAY_NAME_MAX_LEN:
+        raise HTTPException(status_code=400, detail="Display name is too long.")
+
+    _validate_password(req.password)
+
+    try:
+        user = await prisma.user.create(
+            data={
+                "email": email,
+                "passwordHash": hash_password(req.password),
+                "displayName": display_name,
+            }
+        )
+    except UniqueViolationError:
+        # Unique constraint is the source of truth even under a race between two
+        # concurrent signups; we don't pre-check existence and then create.
+        raise HTTPException(status_code=409, detail="Email already registered.")
+
+    # Fresh session on a brand-new account.
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return public_user(user)
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest, request: Request):
+    email = _normalize_email(req.email)
+    user = await prisma.user.find_unique(where={"email": email})
+
+    # Identical error + comparable timing whether the email is unknown or the
+    # password is wrong, so an attacker can't enumerate registered emails.
+    if user is None:
+        verify_password(req.password, _DUMMY_HASH)
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not verify_password(req.password, user.passwordHash):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    # Clear any pre-existing session data before assigning identity → guards
+    # against session fixation.
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return public_user(user)
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def me(request: Request):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    user = await prisma.user.find_unique(where={"id": user_id})
+    if user is None:
+        # Session points at a deleted user — drop the stale cookie.
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    return public_user(user)
+# ───────────────────────────────────────────────────────────────────────
 
 
 # ────────────────────── Folder CRUD Enpoints ───────────────────────────
