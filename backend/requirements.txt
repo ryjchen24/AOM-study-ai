@@ -1,5 +1,11 @@
+# Base
 fastapi
 uvicorn[standard]
 python-dotenv
 httpx
 prisma
+
+# Auth
+bcrypt                    # password hashing
+itsdangerous             # signs the session cookie (used by SessionMiddleware)
+python-multipart>=0.0.18 # form parsing; >=0.0.18 avoids DoS CVEs (CVE-2024-53981/24762)
