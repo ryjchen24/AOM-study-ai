@@ -194,6 +194,24 @@ async def require_user(request: Request) -> User:
     return user
 
 
+# Ownership guards for by-id routes. find_first with a userId filter means a
+# request for someone else's row returns 404 — never reveal that it exists, and
+# never let a user mutate it (IDOR prevention). 404 (not 403) so the response is
+# identical whether the row belongs to another user or doesn't exist at all.
+async def owned_folder_or_404(folder_id: str, user: User):
+    folder = await prisma.folder.find_first(where={"id": folder_id, "userId": user.id})
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found.")
+    return folder
+
+
+async def owned_session_or_404(session_id: str, user: User):
+    session = await prisma.session.find_first(where={"id": session_id, "userId": user.id})
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return session
+
+
 # ───────────────────────── SSE helpers ───────────────────────────────────────
 
 def sse(payload: dict) -> bytes:
@@ -526,12 +544,18 @@ async def me(user: User = Depends(require_user)):
 # ────────────────────── Folder CRUD Enpoints ───────────────────────────
 @app.get("/api/folders")
 async def list_folders(user: User = Depends(require_user)):
-    folders = await prisma.folder.find_many(order={"order": "asc"})
+    folders = await prisma.folder.find_many(
+        where={"userId": user.id}, order={"order": "asc"}
+    )
     return folders
 
 @app.post("/api/folders")
 async def create_folder(req: FolderCreate, user: User = Depends(require_user)):
-    folder = await prisma.folder.create(data=req.model_dump())
+    # A parent must be the caller's own folder, or you could nest under someone
+    # else's tree.
+    if req.parentId is not None:
+        await owned_folder_or_404(req.parentId, user)
+    folder = await prisma.folder.create(data={**req.model_dump(), "userId": user.id})
     return folder
 
 @app.patch("/api/folders/{folder_id}")
@@ -539,23 +563,27 @@ async def update_folder(folder_id: str, req: FolderUpdate, user: User = Depends(
     data = req.model_dump(exclude_unset=True)
     if not data:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
+    await owned_folder_or_404(folder_id, user)
+    if data.get("parentId") is not None:
+        if data["parentId"] == folder_id:
+            return JSONResponse({"error": "a folder cannot be its own parent"}, status_code=400)
+        await owned_folder_or_404(data["parentId"], user)
     folder = await prisma.folder.update(where={"id": folder_id}, data=data)
-    if folder is None:
-        return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
 
 @app.delete("/api/folders/{folder_id}")
 async def delete_folder(folder_id: str, user: User = Depends(require_user)):
+    await owned_folder_or_404(folder_id, user)
     folder = await prisma.folder.delete(where={"id": folder_id})
-    if folder is None:
-        return JSONResponse({"error": "folder not found"}, status_code=404)
     return folder
 # ───────────────────────────────────────────────────────────────────────
 
 # ─────────────────────- Session CRUD Enpoints ──────────────────────────
 @app.get("/api/sessions")
 async def list_sessions(user: User = Depends(require_user)):
-    sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
+    sessions = await prisma.session.find_many(
+        where={"userId": user.id}, order={"updatedAt": "desc"}
+    )
     # Prisma Client Python doesn't expose `_count` aggregates in `include`, so
     # we fan out per-session COUNT queries in parallel. N+1 but fine for the
     # session counts we'll realistically have; can swap for a raw GROUP BY
@@ -572,7 +600,9 @@ async def list_sessions(user: User = Depends(require_user)):
 
 @app.post("/api/sessions")
 async def create_session(req: SessionCreate, user: User = Depends(require_user)):
-    session = await prisma.session.create(data=req.model_dump())
+    if req.folderId is not None:
+        await owned_folder_or_404(req.folderId, user)
+    session = await prisma.session.create(data={**req.model_dump(), "userId": user.id})
     return session
 
 @app.patch("/api/sessions/{session_id}")
@@ -580,22 +610,27 @@ async def update_session(session_id: str, req: SessionUpdate, user: User = Depen
     data = req.model_dump(exclude_unset=True)
     if not data:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
+    await owned_session_or_404(session_id, user)
+    # Moving a session into a folder? That folder must be the caller's too.
+    if data.get("folderId") is not None:
+        await owned_folder_or_404(data["folderId"], user)
     session = await prisma.session.update(where={"id": session_id}, data=data)
-    if session is None:
-        return JSONResponse({"error": "session not found"}, status_code=404)
     return session
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, user: User = Depends(require_user)):
+    await owned_session_or_404(session_id, user)
     session = await prisma.session.delete(where={"id": session_id})
-    if session is None:
-        return JSONResponse({"error": "session not found"}, status_code=404)
     return session
 # ───────────────────────────────────────────────────────────────────────
 
 # ─────────────────────- Messages CRUD Enpoints ─────────────────────────
 @app.get("/api/sessions/{session_id}/messages")
 async def list_messages(session_id: str, user: User = Depends(require_user)):
+    # Messages have no userId of their own; ownership is inherited from the
+    # session. Verify that first so you can't read another user's thread by
+    # guessing a session id.
+    await owned_session_or_404(session_id, user)
     messages = await prisma.message.find_many(
         where={"sessionId": session_id},
         order={"createdAt": "asc"},
@@ -604,6 +639,7 @@ async def list_messages(session_id: str, user: User = Depends(require_user)):
 
 @app.post("/api/sessions/{session_id}/messages")
 async def create_message(session_id: str, req: MessageCreate, user: User = Depends(require_user)):
+    await owned_session_or_404(session_id, user)
     data: dict = {
         "sessionId": session_id,
         "role": req.role,
@@ -625,7 +661,12 @@ async def create_message(session_id: str, req: MessageCreate, user: User = Depen
 async def delete_messages(req: MessageDeleteBulk, user: User = Depends(require_user)):
     if not req.ids:
         return JSONResponse({"error": "ids must be a non-empty array"}, status_code=400)
-    count = await prisma.message.delete_many(where={"id": {"in": req.ids}})
+    # Relation filter: only delete messages whose parent session belongs to the
+    # caller. Ids that aren't theirs are silently skipped, not errored — they
+    # simply don't match the filter, so no info leaks about other users' rows.
+    count = await prisma.message.delete_many(
+        where={"id": {"in": req.ids}, "session": {"is": {"userId": user.id}}}
+    )
     return {"deleted": count}
 
 

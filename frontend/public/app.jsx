@@ -31,6 +31,11 @@ function App() {
   const [sessions, setSessions] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
 
+  // Auth state. `authChecked` gates the whole UI: until /api/auth/me resolves we
+  // render nothing (avoids flashing the app or the login screen on a reload).
+  const [user, setUser] = React.useState(null);
+  const [authChecked, setAuthChecked] = React.useState(false);
+
   const [currentFolderId, setCurrentFolderId] = React.useState(null);
   const [viewMode, setViewMode] = React.useState('grid');
   const [sortBy, setSortBy] = React.useState('modified');
@@ -70,10 +75,35 @@ function App() {
     setTimeout(() => setToast(t => t === msg ? null : t), 2200);
   };
 
-  // Initial hydration: load folders + sessions from the API. The seed arrays
-  // are gone, so until this resolves we render a "Loading…" placeholder to
-  // avoid flashing an empty Files view first.
+  // Who am I? Runs once on mount. 401 → not signed in → render <AuthView/>.
   React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (cancelled) return;
+        setUser(res.ok ? await res.json() : null);
+      } catch {
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setAuthChecked(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const onLogout = async () => {
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+    // Full reload so all in-memory state (folders/sessions/active chat) is dropped
+    // and the auth check re-runs, landing on the login screen.
+    window.location.reload();
+  };
+
+  // Initial hydration: load folders + sessions from the API. Gated on `user` so
+  // we only hit the (now auth-protected) endpoints once we know we're signed in
+  // — otherwise every load would 401.
+  React.useEffect(() => {
+    if (!user) return;
     let cancelled = false;
     (async () => {
       try {
@@ -98,7 +128,7 @@ function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [user]);
 
   // Hydrate theme from localStorage once, ignoring TWEAK_DEFAULTS' fixed value
   // so a user's last choice survives reloads.
@@ -375,12 +405,28 @@ function App() {
     }
   };
 
+  // Auth gate. Until /api/auth/me resolves, render a neutral splash; then either
+  // the Google login screen or the full app. Every hook above runs regardless,
+  // so these early returns don't violate the rules of hooks.
+  if (!authChecked) {
+    return (
+      <div style={{ height: '100vh', display: 'grid', placeItems: 'center',
+                    color: 'var(--text-faint)', fontSize: 13, background: 'var(--bg)' }}>
+        Loading…
+      </div>
+    );
+  }
+  if (!user) {
+    return <AuthView />;
+  }
+
   return (
     <div className="app">
       <Sidebar
         width={sidebarWidth} setWidth={setSidebarWidth}
         tab={sidebarTab} setTab={setSidebarTab}
         folders={folders} sessions={sessions}
+        user={user}
         activeId={activeChatId}
         onSelectChat={onSelectChat}
         onNewChat={onNewChat}
@@ -435,6 +481,7 @@ function App() {
           <ChatView
             session={activeSession}
             folders={folders}
+            user={user}
             model={currentModel.name}
             modelId={modelId}
             onSetTitle={onSetTitle}
@@ -477,6 +524,8 @@ function App() {
           theme={tweaks.theme}
           setTheme={(t) => setTweak('theme', t)}
           models={MODELS}
+          user={user}
+          onLogout={onLogout}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -487,7 +536,7 @@ function App() {
   );
 }
 
-function SettingsModal({ prefs, setPrefs, theme, setTheme, models, onClose }) {
+function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogout, onClose }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -503,6 +552,25 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, onClose }) {
           </div>
         </div>
         <div style={{ padding: '8px 20px 4px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {user && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
+                            textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                Account
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <UserAvatar user={user} className="avatar" />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }} className="truncate">{user.displayName}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }} className="truncate">{user.email}</div>
+                </div>
+                <button className="topbar-btn" onClick={onLogout}>
+                  <I.logOut size={13} /> Log out
+                </button>
+              </div>
+            </div>
+          )}
+
           <div>
             <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
                           textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
