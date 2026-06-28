@@ -1,22 +1,25 @@
 import asyncio
 import json
 import os
-import re
 from datetime import datetime, timezone
 from typing import AsyncIterator, Literal
 
-import bcrypt
 import httpx
+from authlib.integrations.starlette_client import OAuth, OAuthError
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 from contextlib import asynccontextmanager
 
 from prisma import Prisma, Json
-from prisma.errors import UniqueViolationError
 
 load_dotenv()
 
@@ -59,6 +62,34 @@ app.add_middleware(
 )
 # SessionMiddleware always sets HttpOnly, so client JS (and thus XSS) can't read
 # the cookie — nothing more to configure for that.
+
+# ───────────────────────── google oauth ──────────────────────────────────────
+# Google-only auth. Authlib drives the OAuth 2.0 / OIDC dance: it builds the
+# consent redirect, exchanges the code, and — crucially — verifies the
+# id_token's signature and audience for us. We never see or store a password.
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+# Must EXACTLY match a redirect URI registered in the Google Cloud console.
+# Defaults to the frontend origin so the whole flow stays same-origin through
+# the Vite proxy and the session cookie sticks to one origin.
+GOOGLE_REDIRECT_URI = os.environ.get(
+    "GOOGLE_REDIRECT_URI", "http://localhost:5173/api/auth/google/callback"
+)
+# Where to send the browser after a successful login.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
+# Register lazily: if creds aren't set yet the app still boots, and /login
+# returns a clear 503 instead of crashing at import time.
+GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+oauth = OAuth()
+if GOOGLE_ENABLED:
+    oauth.register(
+        name="google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
 
 MODEL_MAP: dict[str, dict[str, str]] = {
     "gemini-flash":  {"provider": "gemini",    "model": "gemini-2.0-flash"},
@@ -131,68 +162,16 @@ class MessageDeleteBulk(BaseModel):
     ids: list[str]
 
 
-class SignupRequest(BaseModel):
-    email: str
-    password: str
-    displayName: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
 # ───────────────────────── auth helpers ──────────────────────────────────────
-# Password rules: bcrypt only hashes the first 72 BYTES of input and silently
-# ignores the rest, so we reject anything longer instead of letting two
-# different passwords that share a 72-byte prefix both authenticate.
-PASSWORD_MIN_LEN = 8
-PASSWORD_MAX_BYTES = 72
-DISPLAY_NAME_MAX_LEN = 80
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-# A throwaway hash we verify against when an email doesn't exist, so login takes
-# the same ~time whether or not the account is real. Without this, response
-# timing leaks which emails are registered (user enumeration).
-_DUMMY_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).decode("utf-8")
-
-
-def _normalize_email(email: str) -> str:
-    return email.strip().lower()
-
-
-def _validate_password(password: str) -> None:
-    if len(password) < PASSWORD_MIN_LEN:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Password must be at least {PASSWORD_MIN_LEN} characters.",
-        )
-    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Password must be at most {PASSWORD_MAX_BYTES} bytes.",
-        )
-
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
-    except ValueError:
-        # Malformed stored hash — treat as a failed login, never a 500.
-        return False
-
 
 def public_user(user) -> dict:
-    # The ONLY shape a user is ever serialized to the client. passwordHash is
-    # deliberately absent so it can never leak through an endpoint response.
+    # The ONLY shape a user is ever serialized to the client. Whitelist of safe
+    # fields — internal columns can never leak through an endpoint response.
     return {
         "id": user.id,
         "email": user.email,
         "displayName": user.displayName,
+        "avatarUrl": user.avatarUrl,
         "createdAt": user.createdAt,
     }
 
@@ -421,7 +400,8 @@ def root() -> str:
         "StudyAI backend is running.\n\n"
         "Endpoints:\n"
         "  GET  /api/health   — provider key status\n"
-        "  POST /api/auth/*   — signup / login / logout / me\n"
+        "  /api/auth/google/* — Google sign-in (login / callback)\n"
+        "  /api/auth/logout|me — session logout / current user\n"
         "  POST /api/chat     — streaming chat (used by the frontend)\n"
     )
 
@@ -440,62 +420,77 @@ def health() -> dict:
 
 
 # ───────────────────────── Auth Endpoints ──────────────────────────────
-# Identity is established here and carried in the signed session cookie. No
-# endpoint trusts a user id from the request body — it always comes from the
-# session (see request.session["user_id"]). require_user (Step 3.4) and
-# per-user query scoping (Step 3.5) build on top of these.
+# Google-only. Identity is established by the OAuth callback and carried in the
+# signed session cookie. No endpoint trusts a user id from the request body — it
+# always comes from the session (request.session["user_id"]). require_user
+# (Step 3.4) and per-user query scoping (Step 3.5) build on top of these.
 
-@app.post("/api/auth/signup")
-async def signup(req: SignupRequest, request: Request):
-    email = _normalize_email(req.email)
-    if not EMAIL_RE.match(email):
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
-
-    display_name = req.displayName.strip()
-    if not display_name:
-        raise HTTPException(status_code=400, detail="Display name is required.")
-    if len(display_name) > DISPLAY_NAME_MAX_LEN:
-        raise HTTPException(status_code=400, detail="Display name is too long.")
-
-    _validate_password(req.password)
-
-    try:
-        user = await prisma.user.create(
-            data={
-                "email": email,
-                "passwordHash": hash_password(req.password),
-                "displayName": display_name,
-            }
+@app.get("/api/auth/google/login")
+async def google_login(request: Request):
+    if not GOOGLE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Google sign-in is not configured on the server.",
         )
-    except UniqueViolationError:
-        # Unique constraint is the source of truth even under a race between two
-        # concurrent signups; we don't pre-check existence and then create.
-        raise HTTPException(status_code=409, detail="Email already registered.")
+    # Authlib stashes a CSRF `state` value in the session and checks it on the
+    # callback, so this whole flow is protected against OAuth CSRF.
+    return await oauth.google.authorize_redirect(request, GOOGLE_REDIRECT_URI)
 
-    # Fresh session on a brand-new account.
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request):
+    if not GOOGLE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Google sign-in is not configured on the server.",
+        )
+
+    # Verifies the `state`, exchanges the code, and validates the id_token's
+    # signature + audience. Any failure (tampering, denied consent, expired
+    # code) raises OAuthError → we bounce back to the frontend, never 500.
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError:
+        return RedirectResponse(url=f"{FRONTEND_URL}/?login=failed")
+
+    userinfo = token.get("userinfo")
+    if not userinfo:
+        userinfo = await oauth.google.userinfo(token=token)
+
+    google_id = userinfo.get("sub")
+    email = userinfo.get("email")
+    # Don't accept an account whose email Google hasn't verified — prevents a
+    # spoofed/unverified address from seeding an account.
+    if not google_id or not email or userinfo.get("email_verified") is False:
+        return RedirectResponse(url=f"{FRONTEND_URL}/?login=failed")
+
+    display_name = userinfo.get("name") or email.split("@")[0]
+    avatar_url = userinfo.get("picture")
+
+    # Find-or-create keyed on the immutable Google `sub`, and refresh the
+    # profile fields on every login so name/avatar stay current.
+    user = await prisma.user.upsert(
+        where={"googleId": google_id},
+        data={
+            "create": {
+                "googleId": google_id,
+                "email": email,
+                "displayName": display_name,
+                "avatarUrl": avatar_url,
+            },
+            "update": {
+                "email": email,
+                "displayName": display_name,
+                "avatarUrl": avatar_url,
+            },
+        },
+    )
+
+    # Clear Authlib's OAuth state + any prior data before assigning identity →
+    # guards against session fixation.
     request.session.clear()
     request.session["user_id"] = user.id
-    return public_user(user)
-
-
-@app.post("/api/auth/login")
-async def login(req: LoginRequest, request: Request):
-    email = _normalize_email(req.email)
-    user = await prisma.user.find_unique(where={"email": email})
-
-    # Identical error + comparable timing whether the email is unknown or the
-    # password is wrong, so an attacker can't enumerate registered emails.
-    if user is None:
-        verify_password(req.password, _DUMMY_HASH)
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    if not verify_password(req.password, user.passwordHash):
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-
-    # Clear any pre-existing session data before assigning identity → guards
-    # against session fixation.
-    request.session.clear()
-    request.session["user_id"] = user.id
-    return public_user(user)
+    return RedirectResponse(url=FRONTEND_URL)
 
 
 @app.post("/api/auth/logout")

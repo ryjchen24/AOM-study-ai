@@ -6,6 +6,6 @@ httpx
 prisma
 
 # Auth
-bcrypt                    # password hashing
-itsdangerous             # signs the session cookie (used by SessionMiddleware)
-python-multipart>=0.0.18 # form parsing; >=0.0.18 avoids DoS CVEs (CVE-2024-53981/24762)
+itsdangerous   # signs the session cookie (used by SessionMiddleware + Authlib state)
+authlib        # OAuth 2.0 / OIDC client for Google; pulls in cryptography to
+               # verify the id_token signature (cryptography reused in Part 4)
