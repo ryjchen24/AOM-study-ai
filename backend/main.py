@@ -7,7 +7,7 @@ from typing import AsyncIterator, Literal
 import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
@@ -20,6 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 
 from prisma import Prisma, Json
+from prisma.models import User
 
 load_dotenv()
 
@@ -174,6 +175,23 @@ def public_user(user) -> dict:
         "avatarUrl": user.avatarUrl,
         "createdAt": user.createdAt,
     }
+
+
+async def require_user(request: Request) -> User:
+    # Auth gate for every protected route. Identity comes ONLY from the signed
+    # session cookie — never from the request body or a query param — so a
+    # client can't impersonate another user by sending their id. Declare it as
+    # `user: User = Depends(require_user)` on a route and FastAPI runs it first,
+    # returning 401 before the handler body if there's no valid session.
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    user = await prisma.user.find_unique(where={"id": user_id})
+    if user is None:
+        # Session points at a deleted user — drop the stale cookie.
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    return user
 
 
 # ───────────────────────── SSE helpers ───────────────────────────────────────
@@ -500,32 +518,24 @@ async def logout(request: Request):
 
 
 @app.get("/api/auth/me")
-async def me(request: Request):
-    user_id = request.session.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated.")
-    user = await prisma.user.find_unique(where={"id": user_id})
-    if user is None:
-        # Session points at a deleted user — drop the stale cookie.
-        request.session.clear()
-        raise HTTPException(status_code=401, detail="Not authenticated.")
+async def me(user: User = Depends(require_user)):
     return public_user(user)
 # ───────────────────────────────────────────────────────────────────────
 
 
 # ────────────────────── Folder CRUD Enpoints ───────────────────────────
 @app.get("/api/folders")
-async def list_folders():
+async def list_folders(user: User = Depends(require_user)):
     folders = await prisma.folder.find_many(order={"order": "asc"})
     return folders
 
 @app.post("/api/folders")
-async def create_folder(req: FolderCreate):
+async def create_folder(req: FolderCreate, user: User = Depends(require_user)):
     folder = await prisma.folder.create(data=req.model_dump())
     return folder
 
 @app.patch("/api/folders/{folder_id}")
-async def update_folder(folder_id: str, req: FolderUpdate):
+async def update_folder(folder_id: str, req: FolderUpdate, user: User = Depends(require_user)):
     data = req.model_dump(exclude_unset=True)
     if not data:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
@@ -535,7 +545,7 @@ async def update_folder(folder_id: str, req: FolderUpdate):
     return folder
 
 @app.delete("/api/folders/{folder_id}")
-async def delete_folder(folder_id: str):
+async def delete_folder(folder_id: str, user: User = Depends(require_user)):
     folder = await prisma.folder.delete(where={"id": folder_id})
     if folder is None:
         return JSONResponse({"error": "folder not found"}, status_code=404)
@@ -544,7 +554,7 @@ async def delete_folder(folder_id: str):
 
 # ─────────────────────- Session CRUD Enpoints ──────────────────────────
 @app.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(user: User = Depends(require_user)):
     sessions = await prisma.session.find_many(order={"updatedAt": "desc"})
     # Prisma Client Python doesn't expose `_count` aggregates in `include`, so
     # we fan out per-session COUNT queries in parallel. N+1 but fine for the
@@ -561,12 +571,12 @@ async def list_sessions():
     return result
 
 @app.post("/api/sessions")
-async def create_session(req: SessionCreate):
+async def create_session(req: SessionCreate, user: User = Depends(require_user)):
     session = await prisma.session.create(data=req.model_dump())
     return session
 
 @app.patch("/api/sessions/{session_id}")
-async def update_session(session_id: str, req: SessionUpdate):
+async def update_session(session_id: str, req: SessionUpdate, user: User = Depends(require_user)):
     data = req.model_dump(exclude_unset=True)
     if not data:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
@@ -576,7 +586,7 @@ async def update_session(session_id: str, req: SessionUpdate):
     return session
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user: User = Depends(require_user)):
     session = await prisma.session.delete(where={"id": session_id})
     if session is None:
         return JSONResponse({"error": "session not found"}, status_code=404)
@@ -585,7 +595,7 @@ async def delete_session(session_id: str):
 
 # ─────────────────────- Messages CRUD Enpoints ─────────────────────────
 @app.get("/api/sessions/{session_id}/messages")
-async def list_messages(session_id: str):
+async def list_messages(session_id: str, user: User = Depends(require_user)):
     messages = await prisma.message.find_many(
         where={"sessionId": session_id},
         order={"createdAt": "asc"},
@@ -593,7 +603,7 @@ async def list_messages(session_id: str):
     return messages
 
 @app.post("/api/sessions/{session_id}/messages")
-async def create_message(session_id: str, req: MessageCreate):
+async def create_message(session_id: str, req: MessageCreate, user: User = Depends(require_user)):
     data: dict = {
         "sessionId": session_id,
         "role": req.role,
@@ -612,7 +622,7 @@ async def create_message(session_id: str, req: MessageCreate):
     return message
 
 @app.delete("/api/messages")
-async def delete_messages(req: MessageDeleteBulk):
+async def delete_messages(req: MessageDeleteBulk, user: User = Depends(require_user)):
     if not req.ids:
         return JSONResponse({"error": "ids must be a non-empty array"}, status_code=400)
     count = await prisma.message.delete_many(where={"id": {"in": req.ids}})
@@ -625,7 +635,7 @@ async def delete_messages(req: MessageDeleteBulk):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, user: User = Depends(require_user)):
     route = MODEL_MAP.get(req.modelId)
     if not route:
         return JSONResponse({"error": f'Unknown model "{req.modelId}"'}, status_code=400)
