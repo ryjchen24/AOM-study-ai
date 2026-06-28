@@ -14,13 +14,14 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  displayName  String
-  folders      Folder[]
-  sessions     Session[]
-  createdAt    DateTime @default(now())
+  id          String    @id @default(cuid())
+  googleId    String    @unique // Google OIDC `sub` — stable identity match key
+  email       String    @unique
+  displayName String
+  avatarUrl   String? // Google `picture`; optional
+  folders     Folder[]
+  sessions    Session[]
+  createdAt   DateTime  @default(now())
 }
 
 model Folder {

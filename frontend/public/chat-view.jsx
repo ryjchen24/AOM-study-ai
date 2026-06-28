@@ -107,7 +107,7 @@ function readFileAsText(file) {
   });
 }
 
-function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder, onSessionActivity, sendOnEnter = true, chatMessagesRef }) {
+function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveToFolder, onSessionActivity, sendOnEnter = true, chatMessagesRef }) {
   const folder = session?.folderId ? folders.find(f => f.id === session.folderId) : null;
 
   // Per-session message state. Keyed in a ref so different chats keep their own edits.
@@ -553,7 +553,7 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
             </div>
           )}
           {turns.map((t, ti) => (
-            <Turn key={t.indices.join('-')} turn={t} turnIdx={ti}
+            <Turn key={t.indices.join('-')} turn={t} turnIdx={ti} user={user}
               onAskDelete={() => setConfirmTurn(ti)}
               onDeleteMessage={removeMessage}
             />
@@ -671,7 +671,7 @@ function ChatView({ session, folders, model, modelId, onSetTitle, onMoveToFolder
   );
 }
 
-function Turn({ turn, turnIdx, onAskDelete, onDeleteMessage }) {
+function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage }) {
   const [hover, setHover] = React.useState(false);
   return (
     <div className="turn"
@@ -681,7 +681,7 @@ function Turn({ turn, turnIdx, onAskDelete, onDeleteMessage }) {
                   transition: 'background 120ms',
                   background: hover ? 'var(--surface-2)' : 'transparent' }}>
       {turn.user && (
-        <Bubble m={turn.user} idx={turn.indices[0]}
+        <Bubble m={turn.user} idx={turn.indices[0]} user={user}
           onDelete={turn.assistant ? null : () => onDeleteMessage(turn.indices[0])}
           showDelete={hover && !turn.assistant} />
       )}
@@ -702,13 +702,14 @@ function Turn({ turn, turnIdx, onAskDelete, onDeleteMessage }) {
   );
 }
 
-function Bubble({ m, idx, onDelete, showDelete }) {
+function Bubble({ m, idx, user, onDelete, showDelete }) {
   return (
     <div className={`msg-row ${m.role}`}>
-      <div className={`msg-avatar ${m.role === 'assistant' ? 'ai' : ''}`}
-           style={m.role === 'user' ? { background: 'var(--c-coral)' } : {}}>
-        {m.role === 'user' ? 'JM' : <I.sparkle size={13} stroke="white" />}
-      </div>
+      {m.role === 'user' ? (
+        <UserAvatar user={user} className="msg-avatar" style={{ background: 'var(--c-coral)' }} />
+      ) : (
+        <div className="msg-avatar ai"><I.sparkle size={13} stroke="white" /></div>
+      )}
       <div style={{ position: 'relative', maxWidth: '86%' }}>
         <div className="msg-bubble" style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: m.html }} />
         {showDelete && onDelete && (

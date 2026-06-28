@@ -1,5 +1,11 @@
+# Base
 fastapi
 uvicorn[standard]
 python-dotenv
 httpx
 prisma
+
+# Auth
+itsdangerous   # signs the session cookie (used by SessionMiddleware + Authlib state)
+authlib        # OAuth 2.0 / OIDC client for Google; pulls in cryptography to
+               # verify the id_token signature (cryptography reused in Part 4)

@@ -1,4 +1,4 @@
-function Sidebar({ width, setWidth, tab, setTab, folders, sessions, activeId, onSelectChat, onNewChat, onOpenSettings, expandedFolders, setExpandedFolders, onSwitchView, view,
+function Sidebar({ width, setWidth, tab, setTab, folders, sessions, user, activeId, onSelectChat, onNewChat, onOpenSettings, expandedFolders, setExpandedFolders, onSwitchView, view,
   renamingChatId, setRenamingChatId, onRenameChat,
   onConfirmDeleteChat, onConfirmDeleteFolder,
   renamingFolderId, setRenamingFolderId, onRenameFolder,
@@ -65,7 +65,11 @@ function Sidebar({ width, setWidth, tab, setTab, folders, sessions, activeId, on
         <span className="status-dot" title="API key connected"/>
         <span className="model-name truncate">Gemini 2.0 Flash</span>
         <button className="icon-btn" onClick={onOpenSettings} title="Settings"><I.settings size={15} /></button>
-        <div className="avatar">JM</div>
+        <button onClick={onOpenSettings} title="Account"
+                style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer',
+                         display: 'grid', placeItems: 'center' }}>
+          <UserAvatar user={user} className="avatar" />
+        </button>
       </div>
 
       <div className="sb-resize" onMouseDown={startResize}/>
