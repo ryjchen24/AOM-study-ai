@@ -4,36 +4,72 @@ function escapeHtml(s) {
   ));
 }
 
-// Minimal markdown → HTML for streaming assistant messages. Matches the look of
-// the seed messages (which already use raw <p>/<ul>/<code>) by emitting the
-// same tags. Fenced code blocks are extracted first so their bodies escape the
-// rest of the inline rules.
+// KaTeX math as a marked extension so $$...$$ (display) and $...$ (inline) are
+// rendered the way Claude renders them. Bad TeX is shown inline in red rather
+// than throwing (throwOnError:false), so one typo can't blank the whole message.
+function renderMath(tex, display) {
+  if (!window.katex) return escapeHtml((display ? '$$' : '$') + tex + (display ? '$$' : '$'));
+  return window.katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+}
+
+const mathExtension = {
+  extensions: [
+    {
+      name: 'blockMath',
+      level: 'block',
+      start(src) { const i = src.indexOf('$$'); return i < 0 ? undefined : i; },
+      tokenizer(src) {
+        const m = /^\$\$([\s\S]+?)\$\$/.exec(src);
+        if (m) return { type: 'blockMath', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return renderMath(token.text, true); },
+    },
+    {
+      name: 'inlineMath',
+      level: 'inline',
+      start(src) { const i = src.indexOf('$'); return i < 0 ? undefined : i; },
+      tokenizer(src) {
+        let m = /^\$\$([^\n]+?)\$\$/.exec(src);
+        if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim(), display: true };
+        // Single-$ inline: require non-space just inside the delimiters so prose
+        // like "$5 and $10" isn't swallowed as math.
+        m = /^\$(?!\s)([^$\n]+?)(?<!\s)\$/.exec(src);
+        if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim(), display: false };
+      },
+      renderer(token) { return renderMath(token.text, token.display); },
+    },
+  ],
+};
+
+// Configure marked once (GFM tables/lists/etc. + soft line breaks + math).
+let markedReady = false;
+function ensureMarked() {
+  if (markedReady || !window.marked) return markedReady;
+  window.marked.use({ gfm: true, breaks: true }, mathExtension);
+  markedReady = true;
+  return true;
+}
+
+// Plain-text fallback used when the CDN libraries haven't loaded.
+function renderPlain(text) {
+  return text
+    ? text.split(/\n{2,}/).map(p => `<p>${escapeHtml(p).replace(/\n/g, '<br/>')}</p>`).join('')
+    : '';
+}
+
+// Markdown + math → sanitized HTML. Renders GitHub-flavored markdown (headings,
+// tables, lists, blockquotes, code, rules, links) and LaTeX math, then runs the
+// result through DOMPurify before it reaches dangerouslySetInnerHTML.
 function renderMarkdown(text) {
   if (!text) return '';
-  const codeBlocks = [];
-  let t = text.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, code) => {
-    codeBlocks.push(escapeHtml(code.replace(/\n$/, '')));
-    return `@@CODEBLOCK${codeBlocks.length - 1}@@`;
-  });
-  t = escapeHtml(t);
-  t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  t = t.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-  t = t.replace(/(?:^|\n)((?:[*\-] .+(?:\n|$))+)/g, (_m, block) => {
-    const items = block.trim().split('\n')
-      .map(l => `<li>${l.replace(/^[*\-] /, '')}</li>`).join('');
-    return `\n<ul>${items}</ul>\n`;
-  });
-  t = t.split(/\n{2,}/).map(p => {
-    p = p.trim();
-    if (!p) return '';
-    if (p.startsWith('<ul>') || p.startsWith('@@CODEBLOCK')) return p;
-    return `<p>${p.replace(/\n/g, '<br/>')}</p>`;
-  }).join('');
-  t = t.replace(/@@CODEBLOCK(\d+)@@/g, (_, i) => (
-    `<pre style="background:var(--surface-3);padding:10px 12px;border-radius:8px;overflow-x:auto;margin:8px 0;font-size:12.5px;"><code style="background:transparent;padding:0;">${codeBlocks[Number(i)]}</code></pre>`
-  ));
-  return t;
+  if (!ensureMarked()) return renderPlain(text);
+  let html;
+  try {
+    html = window.marked.parse(text);
+  } catch (e) {
+    return renderPlain(text);
+  }
+  return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
 }
 
 // Builds the bubble HTML for a message loaded from the API (which only has
@@ -48,7 +84,7 @@ function renderMessageHtml(role, text, atts) {
     return `<div style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 8px;background:rgba(255,255,255,0.12);border-radius:999px;margin:4px 6px 4px 0;">📎 ${escapeHtml(a.name || '')}</div>`;
   }).join('');
   const chipBlock = chips ? `<div>${chips}</div>` : '';
-  const textBlock = text ? `<p>${escapeHtml(text).replace(/\n/g, '<br/>')}</p>` : '';
+  const textBlock = text ? renderMarkdown(text) : '';
   return (chipBlock + textBlock) || '<p></p>';
 }
 
@@ -313,7 +349,7 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
       role: 'user',
       text,
       attachments: attachments.map(({ id, previewUrl, ...rest }) => rest),
-      html: (buildAttachmentHtmlPreview(attachments) + (text ? `<p>${escapeHtml(text).replace(/\n/g, '<br/>')}</p>` : '')) || '<p></p>',
+      html: (buildAttachmentHtmlPreview(attachments) + (text ? renderMarkdown(text) : '')) || '<p></p>',
     };
     const assistantMsg = {
       id: `${session.id}-a-${Date.now()}`,
