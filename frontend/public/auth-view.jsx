@@ -43,37 +43,70 @@ function GoogleMark() {
   );
 }
 
+// What we tell people on the way in. Each ties to a real feature of the app.
+const LANDING_FEATURES = [
+  { title: 'Organize everything', desc: 'Group chats into folders so every subject has a home.' },
+  { title: 'Built for studying', desc: 'Math, tables, and code render cleanly — not as raw text.' },
+  { title: 'Pick your model', desc: 'Switch between fast and deep AI models per question.' },
+];
+
 function AuthView() {
   // Surface a failed/cancelled Google sign-in (backend redirects to ?login=failed).
   const failed = new URLSearchParams(window.location.search).get('login') === 'failed';
   const signIn = () => { window.location.href = '/api/auth/google/login'; };
 
   return (
-    <div style={{ height: '100vh', width: '100vw', display: 'grid', placeItems: 'center',
-                  background: 'var(--bg)' }}>
-      <div className="modal" style={{ width: 360, padding: '32px 28px', textAlign: 'center' }}>
-        <div className="sb-logo-mark" style={{ margin: '0 auto 16px' }}>
-          <div className="a"/><div className="b"/>
-        </div>
-        <div style={{ fontWeight: 600, fontSize: 18, letterSpacing: '-0.01em' }}>StudyAI</div>
-        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, marginBottom: 24 }}>
-          Sign in to access your folders and chats.
+    <div className="landing">
+      {/* Left: brand + value proposition */}
+      <div className="landing-brand">
+        <div className="landing-brandbar">
+          <div className="mark"><div className="a"/><div className="b"/></div>
+          <div className="word">StudyAI</div>
         </div>
 
-        {failed && (
-          <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 16 }}>
-            Sign-in didn’t complete. Please try again.
+        <div className="landing-pitch">
+          <h1>Study smarter,<br/>not harder.</h1>
+          <div className="sub">
+            Your AI study partner that keeps notes, chats, and explanations
+            organized — so you can focus on actually learning.
           </div>
-        )}
+          <div className="landing-features">
+            {LANDING_FEATURES.map(f => (
+              <div className="landing-feature" key={f.title}>
+                <span className="tick"><I.check size={13} strokeWidth={2.5} /></span>
+                <span>
+                  <span className="ft-title">{f.title}.</span>{' '}
+                  <span className="ft-desc">{f.desc}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
 
-        <button onClick={signIn} className="topbar-btn"
-                style={{ width: '100%', height: 42, justifyContent: 'center', gap: 10,
-                         fontSize: 14, fontWeight: 500 }}>
-          <GoogleMark /> Continue with Google
-        </button>
+        <div className="landing-foot">© {new Date().getFullYear()} StudyAI · Your data stays private to you.</div>
+      </div>
 
-        <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 18, lineHeight: 1.5 }}>
-          We only use your Google account to identify you. Your data stays private to you.
+      {/* Right: login */}
+      <div className="landing-auth">
+        <div className="landing-card">
+          <h2>Log in to your account</h2>
+          <div className="lead">Sign in to access your folders and chats.</div>
+
+          {failed && (
+            <div className="landing-error">Sign-in didn’t complete. Please try again.</div>
+          )}
+
+          <button onClick={signIn} className="landing-google">
+            <span className="g-chip"><GoogleMark /></span>
+            Continue with Google
+          </button>
+
+          <div className="landing-divider">Secure sign-in</div>
+
+          <div className="landing-terms">
+            We only use your Google account to identify you. By continuing you agree
+            to keep it classy — no terms-of-service novel required.
+          </div>
         </div>
       </div>
     </div>

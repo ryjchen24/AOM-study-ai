@@ -831,6 +831,91 @@
   }
   .qs-item.focused { background: var(--accent-soft); color: var(--accent-text); }
   .qs-item .meta { margin-left: auto; font-size: 11.5px; color: var(--text-faint); }
+
+  /* === LANDING / LOGIN === */
+  .landing { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
+
+  /* Left: branded value-prop panel. Fixed dark gradient so white text reads in
+     both light and dark themes (the accent token flips lightness between them). */
+  .landing-brand {
+    flex: 1.05; position: relative; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 48px 56px;
+    color: white;
+    background: linear-gradient(150deg, oklch(34% 0.07 195), oklch(22% 0.05 250));
+  }
+  .landing-brand::after {
+    content: ""; position: absolute; right: -120px; top: -120px;
+    width: 420px; height: 420px; border-radius: 50%;
+    background: radial-gradient(circle, oklch(70% 0.12 190 / 0.25), transparent 70%);
+    pointer-events: none;
+  }
+  .landing-brandbar { display: flex; align-items: center; gap: 10px; position: relative; z-index: 1; }
+  .landing-brandbar .mark { width: 26px; height: 26px; position: relative; flex-shrink: 0; }
+  .landing-brandbar .mark .a { position: absolute; inset: 0; background: white; border-radius: 6px; }
+  .landing-brandbar .mark .b {
+    position: absolute; left: 7px; top: 7px; width: 12px; height: 12px;
+    background: oklch(28% 0.06 235); border-radius: 3px;
+  }
+  .landing-brandbar .word { font-weight: 600; font-size: 16px; letter-spacing: -0.01em; }
+
+  .landing-pitch { position: relative; z-index: 1; max-width: 460px; }
+  .landing-pitch h1 {
+    font-size: 38px; line-height: 1.12; font-weight: 700;
+    letter-spacing: -0.02em; margin: 0 0 16px;
+  }
+  .landing-pitch .sub { font-size: 15px; line-height: 1.55; color: oklch(92% 0.02 200 / 0.85); margin-bottom: 28px; }
+  .landing-features { display: flex; flex-direction: column; gap: 14px; }
+  .landing-feature { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; line-height: 1.45; }
+  .landing-feature .tick {
+    flex-shrink: 0; width: 22px; height: 22px; border-radius: 7px;
+    display: grid; place-items: center; margin-top: 1px;
+    background: oklch(100% 0 0 / 0.15); color: white;
+  }
+  .landing-feature .ft-title { font-weight: 600; }
+  .landing-feature .ft-desc { color: oklch(92% 0.02 200 / 0.7); }
+  .landing-foot { position: relative; z-index: 1; font-size: 12px; color: oklch(92% 0.02 200 / 0.55); }
+
+  /* Right: login panel */
+  .landing-auth {
+    flex: 1; display: grid; place-items: center;
+    background: var(--surface); padding: 40px;
+  }
+  .landing-card { width: 100%; max-width: 360px; }
+  .landing-card h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 6px; }
+  .landing-card .lead { font-size: 13.5px; color: var(--text-muted); margin-bottom: 28px; }
+  .landing-google {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    width: 100%; height: 48px; border-radius: 10px;
+    background: var(--text); color: var(--bg);
+    font-size: 14.5px; font-weight: 600;
+    transition: filter 120ms, transform 120ms;
+  }
+  .landing-google:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .landing-google .g-chip {
+    width: 24px; height: 24px; border-radius: 6px; background: white;
+    display: grid; place-items: center;
+  }
+  .landing-divider {
+    display: flex; align-items: center; gap: 12px;
+    margin: 22px 0; color: var(--text-faint); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .landing-divider::before, .landing-divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--border);
+  }
+  .landing-error {
+    font-size: 12.5px; color: var(--danger); margin-bottom: 16px;
+    padding: 8px 12px; border-radius: 8px;
+    background: oklch(96% 0.04 27); border: 1px solid oklch(82% 0.09 27);
+  }
+  [data-theme="dark"] .landing-error { background: oklch(28% 0.06 27); border-color: oklch(40% 0.1 27); }
+  .landing-terms { font-size: 11.5px; color: var(--text-faint); margin-top: 22px; line-height: 1.5; }
+
+  /* On narrow viewports, drop the brand panel and just show the login. */
+  @media (max-width: 820px) {
+    .landing-brand { display: none; }
+  }
 </style>
 </head>
 <body>
