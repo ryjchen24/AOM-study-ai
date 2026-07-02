@@ -553,6 +553,7 @@ function App() {
           theme={tweaks.theme}
           setTheme={(t) => setTweak('theme', t)}
           user={user}
+          sessions={sessions}
           onLogout={onLogout}
           onClose={() => setSettingsOpen(false)}
         />
@@ -749,7 +750,44 @@ function ApiKeysSection() {
   );
 }
 
-function SettingsModal({ prefs, setPrefs, theme, setTheme, user, onLogout, onClose }) {
+// Recent chats with the provider/model each used — a lightweight "did anyone
+// use my key unexpectedly?" view. (Full token/cost accounting is deferred to a
+// dedicated observability table.)
+function RecentActivity({ sessions }) {
+  const recent = React.useMemo(() => (
+    [...(sessions || [])]
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      .slice(0, 5)
+  ), [sessions]);
+  if (recent.length === 0) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        Recent activity
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.5 }}>
+        Your latest chats and the model each used — a quick way to spot a key being used more than you expect.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {recent.map(s => {
+          const r = window.resolveModel(s.provider, s.model);
+          return (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5,
+                                     padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <span className="truncate" style={{ flex: 1, fontWeight: 500 }}>{s.title}</span>
+              <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.provider.name} · {r.model.name}</span>
+              <span style={{ color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{s.messageCount ?? 0} msgs</span>
+              <span style={{ color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{window.formatDate(s.updatedAt)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({ prefs, setPrefs, theme, setTheme, user, sessions, onLogout, onClose }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -844,6 +882,8 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, user, onLogout, onClo
           </div>
 
           <ApiKeysSection />
+
+          <RecentActivity sessions={sessions} />
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end',
                       padding: '14px 18px', borderTop: '1px solid var(--border)', marginTop: 12 }}>

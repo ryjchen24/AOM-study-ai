@@ -14,6 +14,9 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.sessions import SessionMiddleware
 
 from contextlib import asynccontextmanager
@@ -66,6 +69,30 @@ app.add_middleware(
 )
 # SessionMiddleware always sets HttpOnly, so client JS (and thus XSS) can't read
 # the cookie — nothing more to configure for that.
+
+# ───────────────────────── rate limiting ─────────────────────────────────────
+# Per-USER limit (keyed by the session's user_id, NOT the IP): if a session
+# cookie is stolen, this caps how much of the victim's provider key an attacker
+# can burn. Falls back to the client address for unauthenticated requests.
+def _rate_limit_key(request: Request) -> str:
+    try:
+        uid = request.session.get("user_id")
+    except Exception:
+        uid = None
+    return uid or get_remote_address(request)
+
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Catch-all for unhandled errors. Returns a generic message and — critically —
+# never echoes the request body or headers, which can carry a decrypted API key
+# or the auth cookie. Only the exception type is logged, never its payload.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    print(f"Unhandled error on {request.method} {request.url.path}: {type(exc).__name__}")
+    return JSONResponse({"error": "Internal server error."}, status_code=500)
 
 # ───────────────────────── google oauth ──────────────────────────────────────
 # Google-only auth. Authlib drives the OAuth 2.0 / OIDC dance: it builds the
@@ -562,7 +589,8 @@ async def test_key(key_id: str, user: User = Depends(require_user)):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest, user: User = Depends(require_user)):
+@limiter.limit("20/minute")
+async def chat(request: Request, req: ChatRequest, user: User = Depends(require_user)):
     if not req.messages:
         return JSONResponse({"error": "messages must be a non-empty array"}, status_code=400)
 

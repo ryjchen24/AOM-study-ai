@@ -12,3 +12,4 @@ authlib        # OAuth 2.0 / OIDC client for Google; pulls in cryptography to
 
 # BYOK
 cryptography   # Fernet (AES-128-CBC + HMAC) for KEY_ENCRYPTION_KEY
+slowapi        # per-user rate limiting on /api/chat (keyed by user id)
