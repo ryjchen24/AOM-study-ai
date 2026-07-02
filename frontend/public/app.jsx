@@ -1,9 +1,5 @@
-const MODELS = [
-  { id: 'gemini-flash',  name: 'Gemini Flash',  desc: 'Fast' },
-  { id: 'gemini-pro',    name: 'Gemini Pro',    desc: 'Balanced' },
-  { id: 'claude-sonnet', name: 'Claude Sonnet', desc: 'Balanced' },
-  { id: 'claude-haiku',  name: 'Claude Haiku',  desc: 'Fast' },
-];
+// Provider/model catalog + defaults live in data.jsx (window.PROVIDER_CATALOG,
+// DEFAULT_PROVIDER, DEFAULT_MODEL, resolveModel) so chat-view.jsx can share them.
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "light"
@@ -49,17 +45,20 @@ function App() {
   // reloads; everything below reads from prefs state and writes back via savePrefs.
   const [prefs, setPrefs] = React.useState(() => {
     const stored = loadPrefs();
-    // Validate against the current MODELS list — a previously persisted id
-    // would otherwise crash the topbar when MODELS.find returns undefined.
-    const validId = (id) => MODELS.some(m => m.id === id);
+    // Validate the persisted default against the catalog so an unknown id can't
+    // leave the picker in a broken state.
+    const valid = PROVIDER_CATALOG.some(p =>
+      p.id === stored.defaultProvider && p.models.some(m => m.id === stored.defaultModel));
     return {
-      defaultModelId: validId(stored.defaultModelId) ? stored.defaultModelId : 'gemini-flash',
+      defaultProvider: valid ? stored.defaultProvider : DEFAULT_PROVIDER,
+      defaultModel: valid ? stored.defaultModel : DEFAULT_MODEL,
       sendOnEnter: stored.sendOnEnter !== false, // default true
     };
   });
 
-  const [modelId, setModelId] = React.useState(prefs.defaultModelId);
-  const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
+  const [provider, setProvider] = React.useState(prefs.defaultProvider);
+  const [model, setModel] = React.useState(prefs.defaultModel);
+  const [providersWithKeys, setProvidersWithKeys] = React.useState(new Set());
   const [titleEditing, setTitleEditing] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
@@ -107,9 +106,10 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [fRes, sRes] = await Promise.all([
+        const [fRes, sRes, kRes] = await Promise.all([
           fetch('/api/folders'),
           fetch('/api/sessions'),
+          fetch('/api/keys'),
         ]);
         if (!fRes.ok || !sRes.ok) throw new Error('Bad response');
         const [fData, sData] = await Promise.all([fRes.json(), sRes.json()]);
@@ -118,6 +118,11 @@ function App() {
         // messageCount isn't persisted on the backend yet; default to 0 and let
         // onSessionActivity bump it locally as the user chats.
         setSessions(sData.map(s => ({ ...s, messageCount: s.messageCount ?? 0 })));
+        // Which providers the user has a key for — drives greying in the picker.
+        if (kRes.ok) {
+          const keys = await kRes.json();
+          if (!cancelled) setProvidersWithKeys(new Set(keys.map(k => k.provider)));
+        }
       } catch (e) {
         if (!cancelled) {
           console.error('Failed to load initial data', e);
@@ -148,7 +153,7 @@ function App() {
   // Persist prefs whenever they change.
   React.useEffect(() => {
     const stored = loadPrefs();
-    savePrefs({ ...stored, defaultModelId: prefs.defaultModelId, sendOnEnter: prefs.sendOnEnter });
+    savePrefs({ ...stored, defaultProvider: prefs.defaultProvider, defaultModel: prefs.defaultModel, sendOnEnter: prefs.sendOnEnter });
   }, [prefs]);
 
   // Bump session metadata when a chat sees new messages — keeps the sidebar's
@@ -204,7 +209,30 @@ function App() {
 
   const activeSession = activeChatId ? sessions.find(s => s.id === activeChatId) : null;
   const activeFolder = activeSession?.folderId ? folders.find(f => f.id === activeSession.folderId) : null;
-  const currentModel = MODELS.find(m => m.id === modelId) || MODELS[0];
+  // Keep the picker synced with whichever session is open, and persist changes
+  // back to that session (provider + model live on the Session row).
+  React.useEffect(() => {
+    if (!activeSession) return;
+    const r = resolveModel(activeSession.provider, activeSession.model);
+    setProvider(r.provider.id);
+    setModel(r.model.id);
+  }, [activeChatId]);
+
+  const onSelectModel = (pid, mid) => {
+    setProvider(pid);
+    setModel(mid);
+    setPrefs(p => ({ ...p, defaultProvider: pid, defaultModel: mid }));
+    if (activeChatId) {
+      fetch(`/api/sessions/${activeChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: pid, model: mid }),
+      })
+        .then(res => (res.ok ? res.json() : null))
+        .then(u => { if (u) setSessions(arr => arr.map(s => s.id === activeChatId ? { ...s, ...u } : s)); })
+        .catch(() => {});
+    }
+  };
 
   const onSelectChat = (id) => {
     setActiveChatId(id);
@@ -218,7 +246,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: 'New chat',
-          model: currentModel.name,
+          provider,
+          model,
           folderId: folderId || null,
         }),
       });
@@ -451,9 +480,6 @@ function App() {
           onMoveToFolder={(fid) => onMoveChatToFolder(activeSession?.id, fid)}
           onSetTitle={onSetTitle}
           titleEditing={titleEditing} setTitleEditing={setTitleEditing}
-          modelId={modelId} setModelId={setModelId}
-          modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen}
-          currentModel={currentModel}
           theme={tweaks.theme} toggleTheme={() => setTweak('theme', tweaks.theme === 'light' ? 'dark' : 'light')}
           onExport={exportActiveChat}
           canExport={!!activeChatId}
@@ -482,8 +508,11 @@ function App() {
             session={activeSession}
             folders={folders}
             user={user}
-            model={currentModel.name}
-            modelId={modelId}
+            provider={provider}
+            model={model}
+            providersWithKeys={providersWithKeys}
+            onSelectModel={onSelectModel}
+            onOpenSettings={() => setSettingsOpen(true)}
             onSetTitle={onSetTitle}
             onMoveToFolder={(fid) => onMoveChatToFolder(activeSession?.id, fid)}
             onSessionActivity={onSessionActivity}
@@ -523,7 +552,6 @@ function App() {
           setPrefs={setPrefs}
           theme={tweaks.theme}
           setTheme={(t) => setTweak('theme', t)}
-          models={MODELS}
           user={user}
           onLogout={onLogout}
           onClose={() => setSettingsOpen(false)}
@@ -721,7 +749,7 @@ function ApiKeysSection() {
   );
 }
 
-function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogout, onClose }) {
+function SettingsModal({ prefs, setPrefs, theme, setTheme, user, onLogout, onClose }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -780,13 +808,18 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
                           textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
               Default model for new chats
             </div>
-            <select value={prefs.defaultModelId}
-                    onChange={e => setPrefs(p => ({ ...p, defaultModelId: e.target.value }))}
+            <select value={`${prefs.defaultProvider}|${prefs.defaultModel}`}
+                    onChange={e => { const [p, m] = e.target.value.split('|');
+                                     setPrefs(pr => ({ ...pr, defaultProvider: p, defaultModel: m })); }}
                     style={{ width: '100%', padding: '8px 10px', fontSize: 13,
                              border: '1px solid var(--border)', borderRadius: 8,
                              background: 'var(--surface-2)', color: 'var(--text)' }}>
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
+              {PROVIDER_CATALOG.map(pv => (
+                <optgroup key={pv.id} label={pv.name}>
+                  {pv.models.map(m => (
+                    <option key={m.id} value={`${pv.id}|${m.id}`}>{m.name}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>
@@ -821,7 +854,7 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
   );
 }
 
-function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, modelId, setModelId, modelMenuOpen, setModelMenuOpen, currentModel, theme, toggleTheme, onExport, canExport }) {
+function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, theme, toggleTheme, onExport, canExport }) {
   const titleInputRef = React.useRef(null);
   const [draftTitle, setDraftTitle] = React.useState('');
   const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
@@ -900,26 +933,6 @@ function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToF
       <button className="topbar-btn" onClick={() => setView(view === 'files' ? 'chat' : 'files')}>
         {view === 'files' ? <><I.msgSquare size={14} />Chat</> : <><I.folder size={14} />Files</>}
       </button>
-
-      <div className="model-select">
-        <button className="topbar-btn" onClick={() => setModelMenuOpen(o => !o)}>
-          <I.sparkle size={13} />{currentModel.name}<I.chevDown size={12} />
-        </button>
-        {modelMenuOpen && (
-          <>
-            <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setModelMenuOpen(false)}/>
-            <div className="model-menu">
-              {MODELS.map(m => (
-                <div key={m.id} className="model-item" onClick={() => { setModelId(m.id); setModelMenuOpen(false); }}>
-                  <div className="check">{m.id === modelId && <I.check size={13} strokeWidth={2.5} />}</div>
-                  <span style={{ fontWeight: 500 }}>{m.name}</span>
-                  <span className="desc">{m.desc}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
     </div>
   );
 }

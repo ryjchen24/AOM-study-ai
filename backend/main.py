@@ -133,12 +133,15 @@ class FolderUpdate(BaseModel):
 class SessionCreate(BaseModel):
     title: str
     model: str
+    provider: str = "anthropic"
     folderId: str | None = None
 
 
 class SessionUpdate(BaseModel):
     title: str | None = None
     folderId: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class MessageCreate(BaseModel):

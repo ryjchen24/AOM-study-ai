@@ -44,6 +44,7 @@ model Session {
   title     String
   folderId  String?
   folder    Folder?   @relation(fields: [folderId], references: [id])
+  provider  String    @default("anthropic")
   model     String
   messages  Message[]
   userId    String

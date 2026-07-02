@@ -13,6 +13,43 @@ const FOLDER_COLORS = {
 
 window.FOLDER_COLORS = FOLDER_COLORS;
 
+// BYOK provider + model catalog. `provider` ids match the backend (providers.py
+// / UserApiKey.provider); `model` ids are the exact strings sent to /api/chat.
+const PROVIDER_CATALOG = [
+  { id: 'anthropic', name: 'Anthropic', models: [
+    { id: 'claude-sonnet-4-6',            name: 'Claude Sonnet 4.6' },
+    { id: 'claude-haiku-4-5-20251001',    name: 'Claude Haiku 4.5' },
+  ]},
+  { id: 'openai', name: 'OpenAI', models: [
+    { id: 'gpt-4o',      name: 'GPT-4o' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+  ]},
+  { id: 'google', name: 'Google', models: [
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+    { id: 'gemini-1.5-pro',   name: 'Gemini 1.5 Pro' },
+  ]},
+  { id: 'mistral', name: 'Mistral', models: [
+    { id: 'mistral-large-latest', name: 'Mistral Large' },
+    { id: 'mistral-small-latest', name: 'Mistral Small' },
+  ]},
+];
+const DEFAULT_PROVIDER = 'anthropic';
+const DEFAULT_MODEL = 'claude-sonnet-4-6';
+
+// Resolve a (providerId, modelId) pair to catalog entries, falling back to the
+// defaults so a stale/unknown value (e.g. an old session's display-name model)
+// never leaves the picker or the chat payload in a broken state.
+const resolveModel = (providerId, modelId) => {
+  const provider = PROVIDER_CATALOG.find(p => p.id === providerId) || PROVIDER_CATALOG[0];
+  const model = provider.models.find(m => m.id === modelId) || provider.models[0];
+  return { provider, model };
+};
+
+window.PROVIDER_CATALOG = PROVIDER_CATALOG;
+window.DEFAULT_PROVIDER = DEFAULT_PROVIDER;
+window.DEFAULT_MODEL = DEFAULT_MODEL;
+window.resolveModel = resolveModel;
+
 // Helpers
 window.formatDate = (iso) => {
   const d = new Date(iso);
