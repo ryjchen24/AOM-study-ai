@@ -536,6 +536,191 @@ function App() {
   );
 }
 
+// Provider order/labels for the BYOK key manager. `id` matches the backend's
+// `provider` values (and providers.PROVIDERS); `hint` is just a paste example.
+const KEY_PROVIDERS = [
+  { id: 'anthropic', name: 'Anthropic',       hint: 'sk-ant-…' },
+  { id: 'openai',    name: 'OpenAI',          hint: 'sk-…' },
+  { id: 'google',    name: 'Google (Gemini)', hint: 'AIza…' },
+  { id: 'mistral',   name: 'Mistral',         hint: 'your Mistral key' },
+];
+
+// BYOK key management. Talks to /api/keys (list/create/delete) and
+// /api/keys/:id/test. The full key is never rendered — the backend only ever
+// returns { id, provider, label, last4 }, and the paste field is a password
+// input that we clear on save.
+function ApiKeysSection() {
+  const [keys, setKeys] = React.useState(null);   // null = loading
+  const [drafts, setDrafts] = React.useState({}); // provider -> input value
+  const [busy, setBusy] = React.useState({});     // provider -> 'save'|'test'|'remove'
+  const [status, setStatus] = React.useState({}); // provider -> { kind, msg }
+  const [loadError, setLoadError] = React.useState(false);
+  const [confirmRemove, setConfirmRemove] = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/keys');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!cancelled) setKeys(data);
+      } catch {
+        if (!cancelled) { setKeys([]); setLoadError(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const rowFor = (p) => (keys || []).find(k => k.provider === p);
+  const setStat = (p, kind, msg) => setStatus(s => ({ ...s, [p]: msg ? { kind, msg } : null }));
+  const draftOf = (p) => (drafts[p] || '').trim();
+
+  const save = async (p) => {
+    const apiKey = draftOf(p);
+    if (!apiKey || busy[p]) return;
+    setBusy(b => ({ ...b, [p]: 'save' })); setStat(p);
+    try {
+      const res = await fetch('/api/keys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: p, apiKey }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not save key');
+      // Replace any existing row for this provider with the returned public shape.
+      setKeys(ks => [...(ks || []).filter(k => k.id !== data.id && k.provider !== p), data]);
+      setDrafts(d => ({ ...d, [p]: '' }));
+      setStat(p, 'ok', `Saved ••••${data.last4}`);
+    } catch (e) {
+      setStat(p, 'err', e.message || 'Could not save key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+    }
+  };
+
+  const test = async (p) => {
+    const row = rowFor(p);
+    if (!row || busy[p]) return;
+    setBusy(b => ({ ...b, [p]: 'test' })); setStat(p);
+    try {
+      const res = await fetch(`/api/keys/${row.id}/test`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok) setStat(p, 'ok', 'Key works');
+      else setStat(p, 'err', data.error || 'Key did not work');
+    } catch {
+      setStat(p, 'err', 'Could not test key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+    }
+  };
+
+  const remove = async (row) => {
+    const p = row.provider;
+    setBusy(b => ({ ...b, [p]: 'remove' }));
+    try {
+      const res = await fetch(`/api/keys/${row.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+      setKeys(ks => (ks || []).filter(k => k.id !== row.id));
+      setStat(p);
+    } catch {
+      setStat(p, 'err', 'Could not remove key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+      setConfirmRemove(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        API keys
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.5 }}>
+        Bring your own key. Keys are encrypted at rest and only used to call the
+        provider on your behalf — they’re never sent back to the browser.
+      </div>
+
+      {keys === null ? (
+        <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>Loading…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {loadError && <div style={{ fontSize: 12, color: 'var(--danger)' }}>Could not load your keys.</div>}
+          {KEY_PROVIDERS.map(pv => {
+            const row = rowFor(pv.id);
+            const st = status[pv.id];
+            const b = busy[pv.id];
+            const hasDraft = !!draftOf(pv.id);
+            return (
+              <div key={pv.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>{pv.name}</span>
+                  {row ? (
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                                   background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+                      set ••••{row.last4}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                                   background: 'var(--surface-3)', color: 'var(--text-faint)' }}>
+                      not set
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="password" autoComplete="off" spellCheck={false}
+                    value={drafts[pv.id] || ''}
+                    onChange={e => setDrafts(d => ({ ...d, [pv.id]: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') save(pv.id); }}
+                    placeholder={row ? 'Paste a new key to replace' : `Paste ${pv.hint}`}
+                    style={{ flex: 1, minWidth: 0, padding: '7px 10px', fontSize: 13,
+                             border: '1px solid var(--border)', borderRadius: 8, outline: 0,
+                             background: 'var(--surface-2)', color: 'var(--text)' }} />
+                  <button className="topbar-btn" disabled={!!b || !hasDraft}
+                    onClick={() => save(pv.id)}
+                    style={(!!b || !hasDraft) ? { opacity: 0.5 } : null}>
+                    {b === 'save' ? 'Saving…' : (row ? 'Replace' : 'Save')}
+                  </button>
+                  {row && (
+                    <>
+                      <button className="topbar-btn" disabled={!!b} onClick={() => test(pv.id)}>
+                        {b === 'test' ? 'Testing…' : 'Test'}
+                      </button>
+                      <button className="topbar-btn" disabled={!!b} title="Remove key"
+                        onClick={() => setConfirmRemove(row)} style={{ padding: '0 10px' }}>
+                        <I.trash size={13} />
+                      </button>
+                    </>
+                  )}
+                </div>
+                {st && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, fontSize: 12,
+                                color: st.kind === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>
+                    {st.kind === 'ok' ? <I.check size={13} /> : <I.x size={13} />}
+                    <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{st.msg}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {confirmRemove && (
+        <ConfirmModal
+          title="Remove this key?"
+          body={<>Remove your <strong>{KEY_PROVIDERS.find(x => x.id === confirmRemove.provider)?.name}</strong> key
+            (••••{confirmRemove.last4})? You can add it again later.</>}
+          confirmText="Remove key"
+          danger
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => remove(confirmRemove)}
+        />
+      )}
+    </div>
+  );
+}
+
 function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogout, onClose }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -551,7 +736,7 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
             Preferences are saved to this browser.
           </div>
         </div>
-        <div style={{ padding: '8px 20px 4px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ padding: '8px 20px 4px', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '68vh', overflowY: 'auto' }}>
           {user && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
@@ -624,6 +809,8 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
               </label>
             </div>
           </div>
+
+          <ApiKeysSection />
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end',
                       padding: '14px 18px', borderTop: '1px solid var(--border)', marginTop: 12 }}>
