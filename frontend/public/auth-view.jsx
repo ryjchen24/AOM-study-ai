@@ -43,13 +43,6 @@ function GoogleMark() {
   );
 }
 
-// What we tell people on the way in. Each ties to a real feature of the app.
-const LANDING_FEATURES = [
-  { title: 'Organize everything', desc: 'Group chats into folders so every subject has a home.' },
-  { title: 'Built for studying', desc: 'Math, tables, and code render cleanly — not as raw text.' },
-  { title: 'Pick your model', desc: 'Switch between fast and deep AI models per question.' },
-];
-
 function AuthView() {
   // Surface a failed/cancelled Google sign-in (backend redirects to ?login=failed).
   const failed = new URLSearchParams(window.location.search).get('login') === 'failed';
@@ -57,7 +50,7 @@ function AuthView() {
 
   return (
     <div className="landing">
-      {/* Left: brand + value proposition */}
+      {/* Left: brand + headline */}
       <div className="landing-brand">
         <div className="landing-brandbar">
           <div className="mark"><div className="a"/><div className="b"/></div>
@@ -65,32 +58,19 @@ function AuthView() {
         </div>
 
         <div className="landing-pitch">
-          <h1>Study smarter,<br/>not harder.</h1>
+          <h1>Understand<br/>anything, <span className="hl">faster.</span></h1>
           <div className="sub">
-            Your AI study partner that keeps notes, chats, and explanations
-            organized — so you can focus on actually learning.
-          </div>
-          <div className="landing-features">
-            {LANDING_FEATURES.map(f => (
-              <div className="landing-feature" key={f.title}>
-                <span className="tick"><I.check size={13} strokeWidth={2.5} /></span>
-                <span>
-                  <span className="ft-title">{f.title}.</span>{' '}
-                  <span className="ft-desc">{f.desc}</span>
-                </span>
-              </div>
-            ))}
+            Built for how students actually study —<br/>
+            clear, focused, and always ready.
           </div>
         </div>
-
-        <div className="landing-foot">© {new Date().getFullYear()} StudyAI · Your data stays private to you.</div>
       </div>
 
       {/* Right: login */}
       <div className="landing-auth">
         <div className="landing-card">
-          <h2>Log in to your account</h2>
-          <div className="lead">Sign in to access your folders and chats.</div>
+          <h2>Welcome to StudyAI</h2>
+          <div className="lead">Sign in to get started. Free for students.</div>
 
           {failed && (
             <div className="landing-error">Sign-in didn’t complete. Please try again.</div>
@@ -101,11 +81,8 @@ function AuthView() {
             Continue with Google
           </button>
 
-          <div className="landing-divider">Secure sign-in</div>
-
           <div className="landing-terms">
-            We only use your Google account to identify you. By continuing you agree
-            to keep it classy — no terms-of-service novel required.
+            By continuing you agree to StudyAI’s Terms &amp; Privacy Policy.
           </div>
         </div>
       </div>

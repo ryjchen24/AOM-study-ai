@@ -61,17 +61,6 @@ function Sidebar({ width, setWidth, tab, setTab, folders, sessions, user, active
         )}
       </div>
 
-      <div className="sb-bottom">
-        <span className="status-dot" title="API key connected"/>
-        <span className="model-name truncate">Gemini 2.0 Flash</span>
-        <button className="icon-btn" onClick={onOpenSettings} title="Settings"><I.settings size={15} /></button>
-        <button onClick={onOpenSettings} title="Account"
-                style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer',
-                         display: 'grid', placeItems: 'center' }}>
-          <UserAvatar user={user} className="avatar" />
-        </button>
-      </div>
-
       <div className="sb-resize" onMouseDown={startResize}/>
     </aside>
   );

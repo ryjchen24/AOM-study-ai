@@ -483,6 +483,8 @@ function App() {
           theme={tweaks.theme} toggleTheme={() => setTweak('theme', tweaks.theme === 'light' ? 'dark' : 'light')}
           onExport={exportActiveChat}
           canExport={!!activeChatId}
+          user={user}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         {loading ? (
@@ -894,7 +896,7 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, user, sessions, onLog
   );
 }
 
-function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, theme, toggleTheme, onExport, canExport }) {
+function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, theme, toggleTheme, onExport, canExport, user, onOpenSettings }) {
   const titleInputRef = React.useRef(null);
   const [draftTitle, setDraftTitle] = React.useState('');
   const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
@@ -972,6 +974,16 @@ function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToF
 
       <button className="topbar-btn" onClick={() => setView(view === 'files' ? 'chat' : 'files')}>
         {view === 'files' ? <><I.msgSquare size={14} />Chat</> : <><I.folder size={14} />Files</>}
+      </button>
+
+      <button className="topbar-btn icon-only" onClick={onOpenSettings} title="Settings">
+        <I.settings size={14} />
+      </button>
+
+      <button onClick={onOpenSettings} title="Account"
+              style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer',
+                       display: 'grid', placeItems: 'center' }}>
+        <UserAvatar user={user} className="avatar" />
       </button>
     </div>
   );
