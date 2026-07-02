@@ -1,9 +1,5 @@
-const MODELS = [
-  { id: 'gemini-flash',  name: 'Gemini Flash',  desc: 'Fast' },
-  { id: 'gemini-pro',    name: 'Gemini Pro',    desc: 'Balanced' },
-  { id: 'claude-sonnet', name: 'Claude Sonnet', desc: 'Balanced' },
-  { id: 'claude-haiku',  name: 'Claude Haiku',  desc: 'Fast' },
-];
+// Provider/model catalog + defaults live in data.jsx (window.PROVIDER_CATALOG,
+// DEFAULT_PROVIDER, DEFAULT_MODEL, resolveModel) so chat-view.jsx can share them.
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "light"
@@ -49,17 +45,20 @@ function App() {
   // reloads; everything below reads from prefs state and writes back via savePrefs.
   const [prefs, setPrefs] = React.useState(() => {
     const stored = loadPrefs();
-    // Validate against the current MODELS list — a previously persisted id
-    // would otherwise crash the topbar when MODELS.find returns undefined.
-    const validId = (id) => MODELS.some(m => m.id === id);
+    // Validate the persisted default against the catalog so an unknown id can't
+    // leave the picker in a broken state.
+    const valid = PROVIDER_CATALOG.some(p =>
+      p.id === stored.defaultProvider && p.models.some(m => m.id === stored.defaultModel));
     return {
-      defaultModelId: validId(stored.defaultModelId) ? stored.defaultModelId : 'gemini-flash',
+      defaultProvider: valid ? stored.defaultProvider : DEFAULT_PROVIDER,
+      defaultModel: valid ? stored.defaultModel : DEFAULT_MODEL,
       sendOnEnter: stored.sendOnEnter !== false, // default true
     };
   });
 
-  const [modelId, setModelId] = React.useState(prefs.defaultModelId);
-  const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
+  const [provider, setProvider] = React.useState(prefs.defaultProvider);
+  const [model, setModel] = React.useState(prefs.defaultModel);
+  const [providersWithKeys, setProvidersWithKeys] = React.useState(new Set());
   const [titleEditing, setTitleEditing] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
@@ -107,9 +106,10 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [fRes, sRes] = await Promise.all([
+        const [fRes, sRes, kRes] = await Promise.all([
           fetch('/api/folders'),
           fetch('/api/sessions'),
+          fetch('/api/keys'),
         ]);
         if (!fRes.ok || !sRes.ok) throw new Error('Bad response');
         const [fData, sData] = await Promise.all([fRes.json(), sRes.json()]);
@@ -118,6 +118,11 @@ function App() {
         // messageCount isn't persisted on the backend yet; default to 0 and let
         // onSessionActivity bump it locally as the user chats.
         setSessions(sData.map(s => ({ ...s, messageCount: s.messageCount ?? 0 })));
+        // Which providers the user has a key for — drives greying in the picker.
+        if (kRes.ok) {
+          const keys = await kRes.json();
+          if (!cancelled) setProvidersWithKeys(new Set(keys.map(k => k.provider)));
+        }
       } catch (e) {
         if (!cancelled) {
           console.error('Failed to load initial data', e);
@@ -148,7 +153,7 @@ function App() {
   // Persist prefs whenever they change.
   React.useEffect(() => {
     const stored = loadPrefs();
-    savePrefs({ ...stored, defaultModelId: prefs.defaultModelId, sendOnEnter: prefs.sendOnEnter });
+    savePrefs({ ...stored, defaultProvider: prefs.defaultProvider, defaultModel: prefs.defaultModel, sendOnEnter: prefs.sendOnEnter });
   }, [prefs]);
 
   // Bump session metadata when a chat sees new messages — keeps the sidebar's
@@ -204,7 +209,30 @@ function App() {
 
   const activeSession = activeChatId ? sessions.find(s => s.id === activeChatId) : null;
   const activeFolder = activeSession?.folderId ? folders.find(f => f.id === activeSession.folderId) : null;
-  const currentModel = MODELS.find(m => m.id === modelId) || MODELS[0];
+  // Keep the picker synced with whichever session is open, and persist changes
+  // back to that session (provider + model live on the Session row).
+  React.useEffect(() => {
+    if (!activeSession) return;
+    const r = resolveModel(activeSession.provider, activeSession.model);
+    setProvider(r.provider.id);
+    setModel(r.model.id);
+  }, [activeChatId]);
+
+  const onSelectModel = (pid, mid) => {
+    setProvider(pid);
+    setModel(mid);
+    setPrefs(p => ({ ...p, defaultProvider: pid, defaultModel: mid }));
+    if (activeChatId) {
+      fetch(`/api/sessions/${activeChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: pid, model: mid }),
+      })
+        .then(res => (res.ok ? res.json() : null))
+        .then(u => { if (u) setSessions(arr => arr.map(s => s.id === activeChatId ? { ...s, ...u } : s)); })
+        .catch(() => {});
+    }
+  };
 
   const onSelectChat = (id) => {
     setActiveChatId(id);
@@ -218,7 +246,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: 'New chat',
-          model: currentModel.name,
+          provider,
+          model,
           folderId: folderId || null,
         }),
       });
@@ -451,9 +480,6 @@ function App() {
           onMoveToFolder={(fid) => onMoveChatToFolder(activeSession?.id, fid)}
           onSetTitle={onSetTitle}
           titleEditing={titleEditing} setTitleEditing={setTitleEditing}
-          modelId={modelId} setModelId={setModelId}
-          modelMenuOpen={modelMenuOpen} setModelMenuOpen={setModelMenuOpen}
-          currentModel={currentModel}
           theme={tweaks.theme} toggleTheme={() => setTweak('theme', tweaks.theme === 'light' ? 'dark' : 'light')}
           onExport={exportActiveChat}
           canExport={!!activeChatId}
@@ -482,8 +508,11 @@ function App() {
             session={activeSession}
             folders={folders}
             user={user}
-            model={currentModel.name}
-            modelId={modelId}
+            provider={provider}
+            model={model}
+            providersWithKeys={providersWithKeys}
+            onSelectModel={onSelectModel}
+            onOpenSettings={() => setSettingsOpen(true)}
             onSetTitle={onSetTitle}
             onMoveToFolder={(fid) => onMoveChatToFolder(activeSession?.id, fid)}
             onSessionActivity={onSessionActivity}
@@ -523,8 +552,8 @@ function App() {
           setPrefs={setPrefs}
           theme={tweaks.theme}
           setTheme={(t) => setTweak('theme', t)}
-          models={MODELS}
           user={user}
+          sessions={sessions}
           onLogout={onLogout}
           onClose={() => setSettingsOpen(false)}
         />
@@ -536,7 +565,229 @@ function App() {
   );
 }
 
-function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogout, onClose }) {
+// Provider order/labels for the BYOK key manager. `id` matches the backend's
+// `provider` values (and providers.PROVIDERS); `hint` is just a paste example.
+const KEY_PROVIDERS = [
+  { id: 'anthropic', name: 'Anthropic',       hint: 'sk-ant-…' },
+  { id: 'openai',    name: 'OpenAI',          hint: 'sk-…' },
+  { id: 'google',    name: 'Google (Gemini)', hint: 'AIza…' },
+  { id: 'mistral',   name: 'Mistral',         hint: 'your Mistral key' },
+];
+
+// BYOK key management. Talks to /api/keys (list/create/delete) and
+// /api/keys/:id/test. The full key is never rendered — the backend only ever
+// returns { id, provider, label, last4 }, and the paste field is a password
+// input that we clear on save.
+function ApiKeysSection() {
+  const [keys, setKeys] = React.useState(null);   // null = loading
+  const [drafts, setDrafts] = React.useState({}); // provider -> input value
+  const [busy, setBusy] = React.useState({});     // provider -> 'save'|'test'|'remove'
+  const [status, setStatus] = React.useState({}); // provider -> { kind, msg }
+  const [loadError, setLoadError] = React.useState(false);
+  const [confirmRemove, setConfirmRemove] = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/keys');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!cancelled) setKeys(data);
+      } catch {
+        if (!cancelled) { setKeys([]); setLoadError(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const rowFor = (p) => (keys || []).find(k => k.provider === p);
+  const setStat = (p, kind, msg) => setStatus(s => ({ ...s, [p]: msg ? { kind, msg } : null }));
+  const draftOf = (p) => (drafts[p] || '').trim();
+
+  const save = async (p) => {
+    const apiKey = draftOf(p);
+    if (!apiKey || busy[p]) return;
+    setBusy(b => ({ ...b, [p]: 'save' })); setStat(p);
+    try {
+      const res = await fetch('/api/keys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: p, apiKey }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not save key');
+      // Replace any existing row for this provider with the returned public shape.
+      setKeys(ks => [...(ks || []).filter(k => k.id !== data.id && k.provider !== p), data]);
+      setDrafts(d => ({ ...d, [p]: '' }));
+      setStat(p, 'ok', `Saved ••••${data.last4}`);
+    } catch (e) {
+      setStat(p, 'err', e.message || 'Could not save key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+    }
+  };
+
+  const test = async (p) => {
+    const row = rowFor(p);
+    if (!row || busy[p]) return;
+    setBusy(b => ({ ...b, [p]: 'test' })); setStat(p);
+    try {
+      const res = await fetch(`/api/keys/${row.id}/test`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok) setStat(p, 'ok', 'Key works');
+      else setStat(p, 'err', data.error || 'Key did not work');
+    } catch {
+      setStat(p, 'err', 'Could not test key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+    }
+  };
+
+  const remove = async (row) => {
+    const p = row.provider;
+    setBusy(b => ({ ...b, [p]: 'remove' }));
+    try {
+      const res = await fetch(`/api/keys/${row.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+      setKeys(ks => (ks || []).filter(k => k.id !== row.id));
+      setStat(p);
+    } catch {
+      setStat(p, 'err', 'Could not remove key');
+    } finally {
+      setBusy(b => ({ ...b, [p]: null }));
+      setConfirmRemove(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        API keys
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.5 }}>
+        Bring your own key. Keys are encrypted at rest and only used to call the
+        provider on your behalf — they’re never sent back to the browser.
+      </div>
+
+      {keys === null ? (
+        <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>Loading…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {loadError && <div style={{ fontSize: 12, color: 'var(--danger)' }}>Could not load your keys.</div>}
+          {KEY_PROVIDERS.map(pv => {
+            const row = rowFor(pv.id);
+            const st = status[pv.id];
+            const b = busy[pv.id];
+            const hasDraft = !!draftOf(pv.id);
+            return (
+              <div key={pv.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>{pv.name}</span>
+                  {row ? (
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                                   background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+                      set ••••{row.last4}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999,
+                                   background: 'var(--surface-3)', color: 'var(--text-faint)' }}>
+                      not set
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="password" autoComplete="off" spellCheck={false}
+                    value={drafts[pv.id] || ''}
+                    onChange={e => setDrafts(d => ({ ...d, [pv.id]: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') save(pv.id); }}
+                    placeholder={row ? 'Paste a new key to replace' : `Paste ${pv.hint}`}
+                    style={{ flex: 1, minWidth: 0, padding: '7px 10px', fontSize: 13,
+                             border: '1px solid var(--border)', borderRadius: 8, outline: 0,
+                             background: 'var(--surface-2)', color: 'var(--text)' }} />
+                  <button className="topbar-btn" disabled={!!b || !hasDraft}
+                    onClick={() => save(pv.id)}
+                    style={(!!b || !hasDraft) ? { opacity: 0.5 } : null}>
+                    {b === 'save' ? 'Saving…' : (row ? 'Replace' : 'Save')}
+                  </button>
+                  {row && (
+                    <>
+                      <button className="topbar-btn" disabled={!!b} onClick={() => test(pv.id)}>
+                        {b === 'test' ? 'Testing…' : 'Test'}
+                      </button>
+                      <button className="topbar-btn" disabled={!!b} title="Remove key"
+                        onClick={() => setConfirmRemove(row)} style={{ padding: '0 10px' }}>
+                        <I.trash size={13} />
+                      </button>
+                    </>
+                  )}
+                </div>
+                {st && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, fontSize: 12,
+                                color: st.kind === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>
+                    {st.kind === 'ok' ? <I.check size={13} /> : <I.x size={13} />}
+                    <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{st.msg}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {confirmRemove && (
+        <ConfirmModal
+          title="Remove this key?"
+          body={<>Remove your <strong>{KEY_PROVIDERS.find(x => x.id === confirmRemove.provider)?.name}</strong> key
+            (••••{confirmRemove.last4})? You can add it again later.</>}
+          confirmText="Remove key"
+          danger
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => remove(confirmRemove)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Recent chats with the provider/model each used — a lightweight "did anyone
+// use my key unexpectedly?" view. (Full token/cost accounting is deferred to a
+// dedicated observability table.)
+function RecentActivity({ sessions }) {
+  const recent = React.useMemo(() => (
+    [...(sessions || [])]
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      .slice(0, 5)
+  ), [sessions]);
+  if (recent.length === 0) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        Recent activity
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.5 }}>
+        Your latest chats and the model each used — a quick way to spot a key being used more than you expect.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {recent.map(s => {
+          const r = window.resolveModel(s.provider, s.model);
+          return (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5,
+                                     padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <span className="truncate" style={{ flex: 1, fontWeight: 500 }}>{s.title}</span>
+              <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.provider.name} · {r.model.name}</span>
+              <span style={{ color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{s.messageCount ?? 0} msgs</span>
+              <span style={{ color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{window.formatDate(s.updatedAt)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({ prefs, setPrefs, theme, setTheme, user, sessions, onLogout, onClose }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -551,7 +802,7 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
             Preferences are saved to this browser.
           </div>
         </div>
-        <div style={{ padding: '8px 20px 4px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ padding: '8px 20px 4px', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '68vh', overflowY: 'auto' }}>
           {user && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)',
@@ -595,13 +846,18 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
                           textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
               Default model for new chats
             </div>
-            <select value={prefs.defaultModelId}
-                    onChange={e => setPrefs(p => ({ ...p, defaultModelId: e.target.value }))}
+            <select value={`${prefs.defaultProvider}|${prefs.defaultModel}`}
+                    onChange={e => { const [p, m] = e.target.value.split('|');
+                                     setPrefs(pr => ({ ...pr, defaultProvider: p, defaultModel: m })); }}
                     style={{ width: '100%', padding: '8px 10px', fontSize: 13,
                              border: '1px solid var(--border)', borderRadius: 8,
                              background: 'var(--surface-2)', color: 'var(--text)' }}>
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
+              {PROVIDER_CATALOG.map(pv => (
+                <optgroup key={pv.id} label={pv.name}>
+                  {pv.models.map(m => (
+                    <option key={m.id} value={`${pv.id}|${m.id}`}>{m.name}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>
@@ -624,6 +880,10 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
               </label>
             </div>
           </div>
+
+          <ApiKeysSection />
+
+          <RecentActivity sessions={sessions} />
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end',
                       padding: '14px 18px', borderTop: '1px solid var(--border)', marginTop: 12 }}>
@@ -634,7 +894,7 @@ function SettingsModal({ prefs, setPrefs, theme, setTheme, models, user, onLogou
   );
 }
 
-function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, modelId, setModelId, modelMenuOpen, setModelMenuOpen, currentModel, theme, toggleTheme, onExport, canExport }) {
+function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToFolder, onSetTitle, titleEditing, setTitleEditing, theme, toggleTheme, onExport, canExport }) {
   const titleInputRef = React.useRef(null);
   const [draftTitle, setDraftTitle] = React.useState('');
   const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
@@ -713,26 +973,6 @@ function Topbar({ view, setView, activeSession, activeFolder, folders, onMoveToF
       <button className="topbar-btn" onClick={() => setView(view === 'files' ? 'chat' : 'files')}>
         {view === 'files' ? <><I.msgSquare size={14} />Chat</> : <><I.folder size={14} />Files</>}
       </button>
-
-      <div className="model-select">
-        <button className="topbar-btn" onClick={() => setModelMenuOpen(o => !o)}>
-          <I.sparkle size={13} />{currentModel.name}<I.chevDown size={12} />
-        </button>
-        {modelMenuOpen && (
-          <>
-            <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setModelMenuOpen(false)}/>
-            <div className="model-menu">
-              {MODELS.map(m => (
-                <div key={m.id} className="model-item" onClick={() => { setModelId(m.id); setModelMenuOpen(false); }}>
-                  <div className="check">{m.id === modelId && <I.check size={13} strokeWidth={2.5} />}</div>
-                  <span style={{ fontWeight: 500 }}>{m.name}</span>
-                  <span className="desc">{m.desc}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
     </div>
   );
 }

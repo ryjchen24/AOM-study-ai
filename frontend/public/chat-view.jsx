@@ -143,7 +143,64 @@ function readFileAsText(file) {
   });
 }
 
-function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveToFolder, onSessionActivity, sendOnEnter = true, chatMessagesRef }) {
+// Provider + model picker for the composer. Providers the user has no key for
+// are greyed out and route to Settings instead of selecting. Opens upward since
+// it lives at the bottom of the screen.
+function ModelPicker({ provider, model, providersWithKeys, onSelectModel, onOpenSettings, disabled }) {
+  const [open, setOpen] = React.useState(false);
+  const info = window.resolveModel(provider, model);
+  const has = providersWithKeys || new Set();
+  return (
+    <div style={{ position: 'relative' }}>
+      <button className="topbar-btn" onClick={() => setOpen(o => !o)} disabled={disabled}
+              style={{ height: 28, padding: '0 8px', fontSize: 12.5, gap: 6 }} title="Choose model">
+        <I.sparkle size={13} /> {info.model.name} <I.chevDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setOpen(false)} />
+          <div className="model-menu" style={{ left: 0, right: 'auto', top: 'auto', bottom: 'calc(100% + 6px)',
+                                               minWidth: 250, maxHeight: 340, overflowY: 'auto', zIndex: 50 }}>
+            {PROVIDER_CATALOG.map(pv => {
+              const hasKey = has.has(pv.id);
+              return (
+                <div key={pv.id}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px 3px',
+                                fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-faint)' }}>
+                    <span>{pv.name}</span>
+                    {!hasKey && (
+                      <span onClick={() => { setOpen(false); onOpenSettings && onOpenSettings(); }}
+                            style={{ marginLeft: 'auto', textTransform: 'none', letterSpacing: 0, color: 'var(--accent)', cursor: 'pointer' }}>
+                        Add key
+                      </span>
+                    )}
+                  </div>
+                  {pv.models.map(m => {
+                    const active = pv.id === provider && m.id === model;
+                    return (
+                      <div key={m.id} className="model-item"
+                           title={hasKey ? '' : 'Add a key in Settings'}
+                           onClick={() => {
+                             if (!hasKey) { setOpen(false); onOpenSettings && onOpenSettings(); return; }
+                             onSelectModel(pv.id, m.id); setOpen(false);
+                           }}
+                           style={hasKey ? null : { opacity: 0.45 }}>
+                        <div className="check">{active && <I.check size={13} strokeWidth={2.5} />}</div>
+                        <span style={{ fontWeight: 500 }}>{m.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChatView({ session, folders, user, provider, model, providersWithKeys, onSelectModel, onOpenSettings, onSetTitle, onMoveToFolder, onSessionActivity, sendOnEnter = true, chatMessagesRef }) {
   const folder = session?.folderId ? folders.find(f => f.id === session.folderId) : null;
 
   // Per-session message state. Keyed in a ref so different chats keep their own edits.
@@ -228,7 +285,7 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
   }, []);
 
   if (!session) {
-    return <EmptyChat model={model} />;
+    return <EmptyChat modelName={window.resolveModel(provider, model).model.name} />;
   }
 
   const persistMessages = (next) => {
@@ -375,7 +432,8 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
 
     // Build the API payload — strip presentational fields, keep role/text/attachments.
     const payload = {
-      modelId,
+      provider,
+      model,
       messages: next.slice(0, -1).map(m => ({
         role: m.role,
         text: m.text || '',
@@ -396,7 +454,17 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
-        throw new Error(`Server returned ${res.status}`);
+        let msg = `Server returned ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j.error === 'no_key_for_provider') {
+            const pname = window.resolveModel(provider, model).provider.name;
+            msg = `No ${pname} API key set. Add one in Settings to chat with this model.`;
+          } else if (j.detail || j.error) {
+            msg = j.detail || j.error;
+          }
+        } catch {}
+        throw new Error(msg);
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -605,7 +673,7 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
               {folder.name}
             </span>
           )}
-          <span>{model}</span>
+          <span>{window.resolveModel(provider, model).model.name}</span>
           <span className="sep"/>
           <span>{messages.length} messages in context</span>
           <span className="right">
@@ -666,6 +734,10 @@ function ChatView({ session, folders, user, model, modelId, onSetTitle, onMoveTo
                     style={listening ? { color: 'var(--danger)' } : null}>
               <I.mic size={15} />
             </button>
+            <ModelPicker provider={provider} model={model}
+              providersWithKeys={providersWithKeys}
+              onSelectModel={onSelectModel} onOpenSettings={onOpenSettings}
+              disabled={streaming} />
             <div className="right">
               <span className="token-est mono">~{estimateTokens(input, attachments)} tokens</span>
               {streaming ? (
@@ -756,7 +828,7 @@ function Bubble({ m, idx, user, onDelete, showDelete }) {
   );
 }
 
-function EmptyChat({ model }) {
+function EmptyChat({ modelName }) {
   const chips = ['Explain a concept', 'Help with an essay', 'Solve a problem', 'Summarize notes'];
   return (
     <div className="chat-view">
@@ -766,7 +838,7 @@ function EmptyChat({ model }) {
             <I.sparkle size={28} />
           </div>
           <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 6 }}>What do you want to work on?</div>
-          <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 22 }}>Using {model}</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 22 }}>Using {modelName}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             {chips.map(c => (
               <button key={c} className="topbar-btn" style={{ height: 32, borderRadius: 999 }}>{c}</button>
