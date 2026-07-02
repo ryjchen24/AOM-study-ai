@@ -1,8 +1,8 @@
-"""Symmetric encryption for user API keys (BYOK, Part 4).
+"""Symmetric encryption for user API keys (BYOK).
 
 The whole point: a stored provider key must never sit in Postgres in plaintext.
 We encrypt with Fernet (AES-128-CBC + HMAC) using ONE server-wide master key,
-`KEY_ENCRYPTION_KEY`, generated in Step 4.1 and kept only in backend/.env.
+`KEY_ENCRYPTION_KEY`, kept only in backend/.env.
 
 Hard rules (each is a real way people leak keys):
   - Plaintext keys live in process memory for the lifetime of ONE request only.

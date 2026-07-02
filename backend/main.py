@@ -459,7 +459,7 @@ def health() -> dict:
 # Google-only. Identity is established by the OAuth callback and carried in the
 # signed session cookie. No endpoint trusts a user id from the request body — it
 # always comes from the session (request.session["user_id"]). require_user
-# (Step 3.4) and per-user query scoping (Step 3.5) build on top of these.
+# and per-user query scoping build on top of these.
 
 @app.get("/api/auth/google/login")
 async def google_login(request: Request):
