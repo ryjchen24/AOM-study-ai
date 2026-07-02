@@ -313,3 +313,38 @@ PROVIDERS: dict[str, Callable[..., AsyncIterator[str]]] = {
     "google": call_google,
     "mistral": call_mistral,
 }
+
+
+# ───────────────────────── key verification ──────────────────────────────────
+# A "list models" GET is the cheapest way to check a key is valid: it costs no
+# tokens and returns 200 (good) or 401/403 (bad). Same header/TLS/redaction
+# rules as the streamers.
+
+def _auth_headers(provider: str, api_key: str) -> dict:
+    if provider == "anthropic":
+        return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    if provider == "google":
+        return {"x-goog-api-key": api_key}
+    return {"authorization": f"Bearer {api_key}"}  # openai, mistral
+
+
+_VERIFY_URLS = {
+    "openai": "https://api.openai.com/v1/models",
+    "anthropic": "https://api.anthropic.com/v1/models",
+    "google": "https://generativelanguage.googleapis.com/v1beta/models",
+    "mistral": "https://api.mistral.ai/v1/models",
+}
+
+
+async def verify_key(provider: str, api_key: str) -> tuple[bool, str | None]:
+    """Return (ok, error). `error` is redacted of the key and safe to surface."""
+    _require_key(api_key)
+    url = _VERIFY_URLS.get(provider)
+    if url is None:
+        raise ProviderError("Unknown provider.", status_code=400)
+    async with _make_client() as client:
+        resp = await client.get(url, headers=_auth_headers(provider, api_key))
+    if resp.status_code < 400:
+        return True, None
+    detail = _redact(resp.text, api_key)[:300].strip()
+    return False, f"{provider} error {resp.status_code}" + (f": {detail}" if detail else "")

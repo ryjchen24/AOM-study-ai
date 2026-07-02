@@ -2,9 +2,8 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import AsyncIterator, Literal
+from typing import Literal
 
-import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,8 +18,12 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from contextlib import asynccontextmanager
 
-from prisma import Prisma, Json
+from prisma import Prisma, Json, Base64
+from prisma.errors import UniqueViolationError
 from prisma.models import User
+
+import providers
+import security
 
 load_dotenv()
 
@@ -92,22 +95,6 @@ if GOOGLE_ENABLED:
         client_kwargs={"scope": "openid email profile"},
     )
 
-MODEL_MAP: dict[str, dict[str, str]] = {
-    "gemini-flash":  {"provider": "gemini",    "model": "gemini-2.0-flash"},
-    "gemini-pro":    {"provider": "gemini",    "model": "gemini-1.5-pro"},
-    "gpt-4o-mini":   {"provider": "openai",    "model": "gpt-4o-mini"},
-    "gpt-4o":        {"provider": "openai",    "model": "gpt-4o"},
-    "claude-haiku":  {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
-    "claude-sonnet": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-}
-
-SYSTEM_PROMPT = (
-    "You are StudyAI, a focused study assistant. Be concise and clear. "
-    "Use simple markdown when helpful: short paragraphs, **bold** for key terms, "
-    "`code` for code, and lists when enumerating. Avoid filler."
-)
-
-
 # ───────────────────────── request models ────────────────────────────────────
 
 class Attachment(BaseModel):
@@ -124,7 +111,8 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    modelId: str
+    provider: Literal["openai", "anthropic", "google", "mistral"]
+    model: str
     messages: list[Message]
 
 
@@ -161,6 +149,16 @@ class MessageCreate(BaseModel):
 
 class MessageDeleteBulk(BaseModel):
     ids: list[str]
+
+
+# NOTE: `apiKey` intentionally has NO length/pattern constraints. FastAPI echoes
+# the offending value in 422 validation errors, so a constraint here would leak
+# the key into an error response/logs. All key validation happens manually in the
+# handler with clean 400s that never include the key.
+class ApiKeyCreate(BaseModel):
+    provider: Literal["openai", "anthropic", "google", "mistral"]
+    label: str | None = None
+    apiKey: str
 
 
 # ───────────────────────── auth helpers ──────────────────────────────────────
@@ -218,216 +216,6 @@ def sse(payload: dict) -> bytes:
     return f"data: {json.dumps(payload)}\n\n".encode("utf-8")
 
 
-# ───────────────────────── attachment helpers ────────────────────────────────
-# The frontend sends attachments as { name, mime, kind: 'image'|'text', data }
-# where `data` is a base64 string for images and plain text for text files.
-# Each provider serializes them differently; the helpers below translate
-# our normalized shape into the per-provider content block format.
-
-def attachments_to_text(atts: list[Attachment]) -> str:
-    text_atts = [a for a in atts if a.kind == "text"]
-    if not text_atts:
-        return ""
-    blocks = "\n\n".join(
-        f"--- attached file: {a.name} ---\n{a.data}\n--- end file ---"
-        for a in text_atts
-    )
-    return "\n\n" + blocks
-
-
-def anthropic_content(text: str, atts: list[Attachment]) -> list[dict]:
-    blocks: list[dict] = []
-    for a in atts:
-        if a.kind == "image":
-            blocks.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": a.mime or "image/png",
-                    "data": a.data,
-                },
-            })
-    blocks.append({"type": "text", "text": (text or "") + attachments_to_text(atts)})
-    return blocks
-
-
-def openai_content(text: str, atts: list[Attachment]) -> list[dict]:
-    parts: list[dict] = [{"type": "text", "text": (text or "") + attachments_to_text(atts)}]
-    for a in atts:
-        if a.kind == "image":
-            parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{a.mime or 'image/png'};base64,{a.data}"},
-            })
-    return parts
-
-
-def gemini_parts(text: str, atts: list[Attachment]) -> list[dict]:
-    parts: list[dict] = []
-    for a in atts:
-        if a.kind == "image":
-            parts.append({
-                "inline_data": {"mime_type": a.mime or "image/png", "data": a.data},
-            })
-    parts.append({"text": (text or "") + attachments_to_text(atts)})
-    return parts
-
-
-# ───────────────────────── upstream streamers ────────────────────────────────
-
-async def stream_anthropic(model: str, messages: list[Message]) -> AsyncIterator[bytes]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        yield sse({"type": "error", "message": "ANTHROPIC_API_KEY is not set on the backend."})
-        return
-
-    body = {
-        "model": model,
-        "max_tokens": 2048,
-        "system": [
-            {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        ],
-        "messages": [
-            {"role": m.role, "content": anthropic_content(m.text or "", m.attachments)}
-            for m in messages
-        ],
-        "stream": True,
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST", "https://api.anthropic.com/v1/messages", json=body, headers=headers,
-        ) as upstream:
-            if upstream.status_code >= 400:
-                err = (await upstream.aread()).decode("utf-8", "replace")[:400]
-                yield sse({"type": "error", "message": f"Anthropic {upstream.status_code}: {err}"})
-                return
-
-            async for line in upstream.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                try:
-                    evt = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if evt.get("type") == "content_block_delta" and evt.get("delta", {}).get("type") == "text_delta":
-                    yield sse({"type": "token", "text": evt["delta"]["text"]})
-                elif evt.get("type") == "message_stop":
-                    yield sse({"type": "done"})
-
-
-async def stream_openai(model: str, messages: list[Message]) -> AsyncIterator[bytes]:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        yield sse({"type": "error", "message": "OPENAI_API_KEY is not set on the backend."})
-        return
-
-    body = {
-        "model": model,
-        "stream": True,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *[
-                {"role": m.role, "content": openai_content(m.text or "", m.attachments)}
-                for m in messages
-            ],
-        ],
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST", "https://api.openai.com/v1/chat/completions", json=body, headers=headers,
-        ) as upstream:
-            if upstream.status_code >= 400:
-                err = (await upstream.aread()).decode("utf-8", "replace")[:400]
-                yield sse({"type": "error", "message": f"OpenAI {upstream.status_code}: {err}"})
-                return
-
-            async for line in upstream.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    yield sse({"type": "done"})
-                    continue
-                try:
-                    evt = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                tok = (
-                    evt.get("choices", [{}])[0]
-                    .get("delta", {})
-                    .get("content")
-                )
-                if tok:
-                    yield sse({"type": "token", "text": tok})
-
-
-async def stream_gemini(model: str, messages: list[Message]) -> AsyncIterator[bytes]:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        yield sse({"type": "error", "message": "GEMINI_API_KEY is not set on the backend."})
-        return
-
-    body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [
-            {
-                "role": "model" if m.role == "assistant" else "user",
-                "parts": gemini_parts(m.text or "", m.attachments),
-            }
-            for m in messages
-        ],
-    }
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
-        f":streamGenerateContent?alt=sse&key={api_key}"
-    )
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST", url, json=body, headers={"Content-Type": "application/json"},
-        ) as upstream:
-            if upstream.status_code >= 400:
-                err = (await upstream.aread()).decode("utf-8", "replace")[:400]
-                yield sse({"type": "error", "message": f"Gemini {upstream.status_code}: {err}"})
-                return
-
-            async for line in upstream.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                try:
-                    evt = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                parts = evt.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                tok = "".join(p.get("text", "") for p in parts)
-                if tok:
-                    yield sse({"type": "token", "text": tok})
-
-    yield sse({"type": "done"})
-
-
 # ───────────────────────── routes ────────────────────────────────────────────
 
 @app.get("/", response_class=PlainTextResponse)
@@ -435,7 +223,7 @@ def root() -> str:
     return (
         "StudyAI backend is running.\n\n"
         "Endpoints:\n"
-        "  GET  /api/health   — provider key status\n"
+        "  GET  /api/health   — health check\n"
         "  /api/auth/google/* — Google sign-in (login / callback)\n"
         "  /api/auth/logout|me — session logout / current user\n"
         "  POST /api/chat     — streaming chat (used by the frontend)\n"
@@ -444,14 +232,7 @@ def root() -> str:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {
-        "ok": True,
-        "providers": {
-            "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
-            "openai":    bool(os.environ.get("OPENAI_API_KEY")),
-            "gemini":    bool(os.environ.get("GEMINI_API_KEY")),
-        },
-    }
+    return {"ok": True, "providers": sorted(providers.PROVIDERS.keys())}
 
 
 
@@ -675,27 +456,141 @@ async def delete_messages(req: MessageDeleteBulk, user: User = Depends(require_u
 
 
 
+# ─────────────────────── API Key CRUD Endpoints ────────────────────────
+# BYOK: users store their own provider keys, encrypted at rest. Responses NEVER
+# include the key — only { id, provider, label, last4 }. All routes are auth'd
+# and scoped by userId so one user can't read/mutate/test another's keys.
+
+# Gut-check prefix filters — NOT security, just to catch obvious paste mistakes.
+def _key_shape_error(provider: str, key: str) -> str | None:
+    if provider == "openai" and not key.startswith("sk-"):
+        return "OpenAI keys start with 'sk-'."
+    if provider == "anthropic" and not key.startswith("sk-ant-"):
+        return "Anthropic keys start with 'sk-ant-'."
+    if provider == "google" and not key.startswith("AIza"):
+        return "Google keys start with 'AIza'."
+    if provider == "mistral" and len(key) < 20:
+        return "That Mistral key looks too short."
+    return None
+
+
+def _public_key(row) -> dict:
+    # The ONLY shape a stored key is serialized to the client. Note: no
+    # encryptedKey, ever.
+    return {"id": row.id, "provider": row.provider, "label": row.label, "last4": row.last4}
+
+
+@app.get("/api/keys")
+async def list_keys(user: User = Depends(require_user)):
+    rows = await prisma.userapikey.find_many(
+        where={"userId": user.id}, order={"createdAt": "asc"}
+    )
+    return [_public_key(r) for r in rows]
+
+
+@app.post("/api/keys")
+async def create_key(req: ApiKeyCreate, user: User = Depends(require_user)):
+    key = (req.apiKey or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key is required.")
+    if len(key) > 256:
+        # Length cap so nobody POSTs a huge blob. Message never includes the key.
+        raise HTTPException(status_code=400, detail="API key is too long.")
+    shape_err = _key_shape_error(req.provider, key)
+    if shape_err:
+        raise HTTPException(status_code=400, detail=shape_err)
+
+    label = req.label.strip() if req.label else None
+
+    # Postgres treats NULLs as distinct in a UNIQUE index, so the DB constraint
+    # won't catch duplicate (userId, provider, NULL-label) rows — check manually.
+    existing = await prisma.userapikey.find_first(
+        where={"userId": user.id, "provider": req.provider, "label": label}
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="A key for this provider and label already exists.",
+        )
+
+    try:
+        row = await prisma.userapikey.create(data={
+            "userId": user.id,
+            "provider": req.provider,
+            "label": label,
+            "encryptedKey": Base64.encode(security.encrypt_key(key)),
+            "last4": key[-4:],
+        })
+    except UniqueViolationError:
+        # Race: a concurrent request created the same (userId, provider, label).
+        raise HTTPException(
+            status_code=409,
+            detail="A key for this provider and label already exists.",
+        )
+    return _public_key(row)
+
+
+@app.delete("/api/keys/{key_id}")
+async def delete_key(key_id: str, user: User = Depends(require_user)):
+    # Scoped delete: the userId filter means a request for someone else's key id
+    # deletes nothing → 404, so ownership can't be probed (IDOR prevention).
+    deleted = await prisma.userapikey.delete_many(
+        where={"id": key_id, "userId": user.id}
+    )
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Key not found.")
+    return {"deleted": deleted}
+
+
+@app.post("/api/keys/{key_id}/test")
+async def test_key(key_id: str, user: User = Depends(require_user)):
+    row = await prisma.userapikey.find_first(where={"id": key_id, "userId": user.id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Key not found.")
+    # Decrypt in memory for this one request only — never stored, cached, logged.
+    # Prisma returns Bytes as a Base64 wrapper; .decode() → the raw ciphertext.
+    plaintext = security.decrypt_key(row.encryptedKey.decode())
+    try:
+        ok, error = await providers.verify_key(row.provider, plaintext)
+    except providers.ProviderError as e:
+        return {"ok": False, "error": e.message}
+    return {"ok": True} if ok else {"ok": False, "error": error}
+# ───────────────────────────────────────────────────────────────────────
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest, user: User = Depends(require_user)):
-    route = MODEL_MAP.get(req.modelId)
-    if not route:
-        return JSONResponse({"error": f'Unknown model "{req.modelId}"'}, status_code=400)
     if not req.messages:
         return JSONResponse({"error": "messages must be a non-empty array"}, status_code=400)
 
-    provider = route["provider"]
-    model = route["model"]
+    # BYOK: use the caller's own stored key for this provider — never an env key.
+    key_row = await prisma.userapikey.find_first(
+        where={"userId": user.id, "provider": req.provider}
+    )
+    if key_row is None:
+        # Frontend maps this to "Add a key in Settings".
+        return JSONResponse({"error": "no_key_for_provider"}, status_code=400)
 
-    if provider == "anthropic":
-        gen = stream_anthropic(model, req.messages)
-    elif provider == "openai":
-        gen = stream_openai(model, req.messages)
-    else:
-        gen = stream_gemini(model, req.messages)
+    # Decrypt in memory for this request only; the plaintext never leaves this scope.
+    api_key = security.decrypt_key(key_row.encryptedKey.decode())
+    stream_fn = providers.PROVIDERS[req.provider]  # provider constrained by the model
+    messages = [m.model_dump() for m in req.messages]
+
+    async def event_stream():
+        try:
+            async for tok in stream_fn(api_key, req.model, messages):
+                yield sse({"type": "token", "text": tok})
+            yield sse({"type": "done"})
+        except providers.ProviderError as exc:
+            # providers.py has already redacted any key material from the message.
+            yield sse({"type": "error", "message": exc.message})
+        except Exception:
+            # Last-resort guard: never surface internals (or the key) to the client.
+            yield sse({"type": "error", "message": "Chat failed due to a server error."})
 
     headers = {
         "Cache-Control": "no-cache, no-transform",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(gen, media_type="text/event-stream", headers=headers)
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
