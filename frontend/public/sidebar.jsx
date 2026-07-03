@@ -26,8 +26,7 @@ function Sidebar({ width, setWidth, tab, setTab, folders, sessions, user, active
     <aside className="sidebar" style={{ width }}>
       <div className="sb-top">
         <div className="sb-logo">
-          <div className="sb-logo-mark"><div className="a"/><div className="b"/></div>
-          <div className="sb-logo-text">StudyAI</div>
+          <div className="sb-logo-text">AMO</div>
         </div>
         <button className="new-chat" onClick={onNewChat}>
           <I.plus size={14} />

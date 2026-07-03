@@ -716,7 +716,7 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
           )}
           <textarea
             ref={textareaRef}
-            placeholder="Message StudyAI…"
+            placeholder="Message AMO…"
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -851,7 +851,7 @@ function EmptyChat({ modelName }) {
       </div>
       <div className="composer-wrap">
         <div className="composer">
-          <textarea placeholder="Message StudyAI…" rows={1} disabled />
+          <textarea placeholder="Message AMO…" rows={1} disabled />
           <div className="composer-toolbar">
             <button className="icon-btn" disabled><I.paperclip size={15} /></button>
             <button className="icon-btn" disabled><I.mic size={15} /></button>

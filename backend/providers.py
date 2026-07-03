@@ -31,7 +31,7 @@ from typing import AsyncIterator, Awaitable, Callable, Iterable
 import httpx
 
 SYSTEM_PROMPT = (
-    "You are StudyAI, a focused study assistant. Be concise and clear. "
+    "You are AMO, a focused study assistant. Be concise and clear. "
     "Use simple markdown when helpful: short paragraphs, **bold** for key terms, "
     "`code` for code, and lists when enumerating. Avoid filler."
 )

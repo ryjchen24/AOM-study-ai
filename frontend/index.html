@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>StudyAI</title>
+<title>AMO</title>
 <meta name="viewport" content="width=1280" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Poppins:wght@700;800&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
@@ -105,17 +105,10 @@
 
   .sb-top { padding: 14px 12px 8px; }
   .sb-logo { display: flex; align-items: center; gap: 10px; padding: 4px 6px 12px; }
-  .sb-logo-mark {
-    width: 24px; height: 24px; position: relative; flex-shrink: 0;
+  .sb-logo-text {
+    font-family: 'Poppins', 'Inter', sans-serif;
+    font-weight: 800; letter-spacing: -0.01em; font-size: 15px;
   }
-  .sb-logo-mark .a {
-    position: absolute; inset: 0; background: var(--accent); border-radius: 5px;
-  }
-  .sb-logo-mark .b {
-    position: absolute; left: 6px; top: 6px; width: 12px; height: 12px;
-    background: var(--surface-2); border-radius: 3px;
-  }
-  .sb-logo-text { font-weight: 600; letter-spacing: -0.01em; font-size: 15px; }
 
   .new-chat {
     display: flex; align-items: center; gap: 8px;
@@ -839,37 +832,38 @@
   .landing-brand {
     flex: 1; display: flex; flex-direction: column;
     padding: 44px 56px;
-    border-right: 1px solid var(--border);
   }
   .landing-brandbar { display: flex; align-items: center; gap: 10px; }
-  .landing-brandbar .mark { width: 26px; height: 26px; position: relative; flex-shrink: 0; }
-  .landing-brandbar .mark .a { position: absolute; inset: 0; background: var(--c-teal); border-radius: 6px; }
-  .landing-brandbar .mark .b {
-    position: absolute; left: 7px; top: 7px; width: 12px; height: 12px;
-    background: var(--bg); border-radius: 3px;
+  .landing-brandbar .word {
+    font-family: 'Poppins', 'Inter', sans-serif;
+    font-weight: 800; font-size: 23.5px; letter-spacing: -0.01em;
   }
-  .landing-brandbar .word { font-weight: 700; font-size: 17px; letter-spacing: -0.01em; }
 
   .landing-pitch { margin: auto 0; max-width: 560px; }
   .landing-pitch h1 {
-    font-size: clamp(40px, 4.6vw, 58px); line-height: 1.1; font-weight: 700;
+    font-size: clamp(60px, 3.3vw, 79px); line-height: 1.1; font-weight: 700;
     letter-spacing: -0.03em; margin: 0 0 26px;
   }
   .landing-pitch h1 .hl { color: var(--c-teal); }
-  .landing-pitch .sub { font-size: 19px; line-height: 1.55; color: var(--text-muted); }
+  .landing-pitch .sub { font-size: 28.5px; line-height: 1.55; color: var(--text-muted); }
 
   /* Right: login panel */
   .landing-auth {
     flex: 1; display: grid; place-items: center; padding: 40px;
+    background: oklch(58% 0.09 180 / 0.12);
   }
-  .landing-card { width: 100%; max-width: 420px; text-align: center; }
+  .landing-card {
+    width: 100%; max-width: 484px; text-align: center;
+    background: var(--surface); border-radius: 16px;
+    padding: 40px 32px; box-shadow: var(--shadow-pop);
+  }
   .landing-card h2 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 10px; }
-  .landing-card .lead { font-size: 15px; color: var(--text-muted); margin-bottom: 30px; }
+  .landing-card .lead { font-size: 22.5px; color: var(--text-muted); margin-bottom: 30px; }
   .landing-google {
     display: flex; align-items: center; justify-content: center; gap: 12px;
     width: 100%; height: 54px; border-radius: 12px;
     background: var(--text); color: var(--bg);
-    font-size: 15.5px; font-weight: 600;
+    font-size: 23px; font-weight: 600;
     transition: filter 120ms, transform 120ms;
   }
   .landing-google:hover { filter: brightness(1.08); transform: translateY(-1px); }
@@ -878,12 +872,12 @@
     display: grid; place-items: center;
   }
   .landing-error {
-    font-size: 12.5px; color: var(--danger); margin-bottom: 16px;
+    font-size: 19px; color: var(--danger); margin-bottom: 16px;
     padding: 8px 12px; border-radius: 8px;
     background: oklch(96% 0.04 27); border: 1px solid oklch(82% 0.09 27);
   }
   [data-theme="dark"] .landing-error { background: oklch(28% 0.06 27); border-color: oklch(40% 0.1 27); }
-  .landing-terms { font-size: 12.5px; color: var(--text-faint); margin-top: 20px; line-height: 1.5; }
+  .landing-terms { font-size: 16px; color: var(--text-faint); margin-top: 20px; line-height: 1.5; }
 
   /* On narrow viewports, drop the brand panel and just show the login. */
   @media (max-width: 820px) {

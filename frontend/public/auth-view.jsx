@@ -53,8 +53,7 @@ function AuthView() {
       {/* Left: brand + headline */}
       <div className="landing-brand">
         <div className="landing-brandbar">
-          <div className="mark"><div className="a"/><div className="b"/></div>
-          <div className="word">StudyAI</div>
+          <div className="word">AMO</div>
         </div>
 
         <div className="landing-pitch">
@@ -69,7 +68,7 @@ function AuthView() {
       {/* Right: login */}
       <div className="landing-auth">
         <div className="landing-card">
-          <h2>Welcome to StudyAI</h2>
+          <h2>Welcome to AMO</h2>
           <div className="lead">Sign in to get started. Free for students.</div>
 
           {failed && (
@@ -82,7 +81,7 @@ function AuthView() {
           </button>
 
           <div className="landing-terms">
-            By continuing you agree to StudyAI’s Terms &amp; Privacy Policy.
+            By continuing you agree to AMO’s Terms &amp; Privacy Policy.
           </div>
         </div>
       </div>

@@ -251,7 +251,7 @@ def sse(payload: dict) -> bytes:
 @app.get("/", response_class=PlainTextResponse)
 def root() -> str:
     return (
-        "StudyAI backend is running.\n\n"
+        "AMO backend is running.\n\n"
         "Endpoints:\n"
         "  GET  /api/health   — health check\n"
         "  /api/auth/google/* — Google sign-in (login / callback)\n"
