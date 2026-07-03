@@ -816,7 +816,7 @@ function Bubble({ m, idx, user, onDelete, showDelete }) {
       {m.role === 'user' ? (
         <UserAvatar user={user} className="msg-avatar" style={{ background: 'var(--c-coral)' }} />
       ) : (
-        <div className="msg-avatar ai"><I.sparkle size={13} stroke="white" /></div>
+        <div className="msg-avatar ai"><I.sparkle size={13} /></div>
       )}
       <div style={{ position: 'relative', maxWidth: '86%' }}>
         <div className="msg-bubble" style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: m.html }} />

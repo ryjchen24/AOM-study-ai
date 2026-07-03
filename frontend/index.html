@@ -59,7 +59,7 @@
     --text: oklch(96% 0.005 220);
     --text-muted: oklch(70% 0.01 220);
     --text-faint: oklch(55% 0.012 220);
-    --accent: oklch(72% 0.1 180);
+    --accent: oklch(65% 0.1 180);
     --accent-soft: oklch(30% 0.04 180);
     --accent-text: oklch(82% 0.09 180);
     --shadow-pop: 0 1px 2px oklch(0% 0 0 / 0.4), 0 8px 24px oklch(0% 0 0 / 0.4);
@@ -107,16 +107,16 @@
   .sb-logo { display: flex; align-items: center; gap: 10px; padding: 4px 6px 12px; }
   .sb-logo-text {
     font-family: 'Poppins', 'Inter', sans-serif;
-    font-weight: 800; letter-spacing: -0.01em; font-size: 15px;
+    font-weight: 700; letter-spacing: -0.01em; font-size: 18px;
   }
 
   .new-chat {
     display: flex; align-items: center; gap: 8px;
-    width: 100%; padding: 8px 12px;
+    width: 100%; padding: 10px 14px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    font-weight: 500; font-size: 13px;
+    font-weight: 500; font-size: 14px;
     color: var(--text);
     transition: background 120ms, border-color 120ms;
   }
@@ -130,7 +130,7 @@
     display: flex; gap: 2px; padding: 12px 12px 6px;
   }
   .sb-tab {
-    flex: 1; padding: 6px 10px; font-size: 12.5px; font-weight: 500;
+    flex: 1; padding: 8px 12px; font-size: 13.5px; font-weight: 500;
     color: var(--text-muted); border-radius: var(--radius-sm);
     transition: background 120ms, color 120ms;
   }
@@ -143,18 +143,18 @@
   .sb-body::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
   .sb-section-label {
-    font-size: 11px; font-weight: 500; color: var(--text-faint);
+    font-size: 12px; font-weight: 500; color: var(--text-faint);
     text-transform: uppercase; letter-spacing: 0.05em;
     padding: 12px 8px 6px;
   }
 
   .chat-row {
     display: flex; align-items: center; gap: 8px;
-    padding: 6px 8px; margin: 1px 0;
+    padding: 8px 10px; margin: 2px 0;
     border-radius: var(--radius-sm);
     cursor: pointer;
     color: var(--text);
-    font-size: 13px;
+    font-size: 14px;
     position: relative;
     transition: background 100ms;
   }
@@ -167,7 +167,7 @@
   .chat-row .actions { display: none; gap: 2px; }
   .chat-row:hover .actions { display: flex; }
   .chat-row .icon-btn {
-    width: 22px; height: 22px; display: grid; place-items: center;
+    width: 25px; height: 25px; display: grid; place-items: center;
     border-radius: 4px; color: var(--text-faint);
   }
   .chat-row .icon-btn:hover { background: var(--surface); color: var(--text); }
@@ -175,10 +175,10 @@
   /* Folder rows */
   .folder-row {
     display: flex; align-items: center; gap: 8px;
-    padding: 6px 8px; margin: 1px 0;
+    padding: 8px 10px; margin: 2px 0;
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     transition: background 100ms;
   }
   .folder-row:hover { background: var(--surface-3); }
@@ -194,12 +194,12 @@
   .folder-row:hover .actions { display: flex; }
   .folder-row:hover .count { display: none; }
   .folder-row .icon-btn {
-    width: 22px; height: 22px; display: grid; place-items: center;
+    width: 25px; height: 25px; display: grid; place-items: center;
     border-radius: 4px; color: var(--text-faint);
   }
   .folder-row .icon-btn:hover { background: var(--surface); color: var(--text); }
   .folder-row .count {
-    font-size: 11px; color: var(--text-faint);
+    font-size: 12px; color: var(--text-faint);
     background: var(--surface); border: 1px solid var(--border);
     padding: 1px 6px; border-radius: 999px;
     font-variant-numeric: tabular-nums;
@@ -209,9 +209,9 @@
 
   .new-folder-btn {
     display: flex; align-items: center; gap: 8px;
-    width: 100%; padding: 7px 8px;
+    width: 100%; padding: 9px 10px;
     border-radius: var(--radius-sm);
-    color: var(--text-muted); font-size: 13px;
+    color: var(--text-muted); font-size: 14px;
     margin-top: 8px;
     transition: background 100ms, color 100ms;
   }
@@ -231,16 +231,16 @@
     flex-shrink: 0;
   }
   .sb-bottom .model-name {
-    font-size: 12px; color: var(--text-muted);
+    font-size: 13px; color: var(--text-muted);
     flex: 1; min-width: 0;
   }
   .sb-bottom .icon-btn {
-    width: 26px; height: 26px; display: grid; place-items: center;
+    width: 30px; height: 30px; display: grid; place-items: center;
     border-radius: var(--radius-sm); color: var(--text-muted);
   }
   .sb-bottom .icon-btn:hover { background: var(--surface-3); color: var(--text); }
   .avatar {
-    width: 26px; height: 26px; border-radius: 50%;
+    width: 30px; height: 30px; border-radius: 50%;
     display: grid; place-items: center;
     font-size: 11px; font-weight: 600; color: white;
     background: var(--c-coral);
@@ -252,13 +252,13 @@
 
   .topbar {
     display: flex; align-items: center; gap: 12px;
-    padding: 10px 20px; height: 52px;
+    padding: 12px 22px; height: 58px;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     flex-shrink: 0;
   }
   .topbar-title {
-    font-size: 14px; font-weight: 600; color: var(--text);
+    font-size: 15px; font-weight: 600; color: var(--text);
     padding: 4px 6px; border-radius: 4px;
     cursor: text;
     max-width: 320px;
@@ -287,15 +287,15 @@
 
   .topbar-btn {
     display: inline-flex; align-items: center; gap: 6px;
-    height: 30px; padding: 0 12px;
+    height: 34px; padding: 0 14px;
     border-radius: var(--radius-sm);
-    font-size: 13px; font-weight: 500; color: var(--text);
+    font-size: 14px; font-weight: 500; color: var(--text);
     border: 1px solid var(--border);
     background: var(--surface);
     transition: background 120ms;
   }
   .topbar-btn:hover { background: var(--surface-3); }
-  .topbar-btn.icon-only { padding: 0; width: 30px; justify-content: center; }
+  .topbar-btn.icon-only { padding: 0; width: 34px; justify-content: center; }
   .topbar-btn.primary {
     background: var(--accent); color: white; border-color: var(--accent);
   }
@@ -327,11 +327,11 @@
   }
   .files-toolbar {
     display: flex; align-items: center; gap: 12px;
-    padding: 14px 28px;
+    padding: 16px 30px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
-  .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .breadcrumb .seg {
     color: var(--text-muted);
     cursor: pointer; padding: 3px 6px; border-radius: 4px;
@@ -343,14 +343,14 @@
 
   .files-toolbar .search {
     display: flex; align-items: center; gap: 8px;
-    height: 32px; padding: 0 12px;
+    height: 36px; padding: 0 14px;
     background: var(--surface-2); border: 1px solid var(--border);
     border-radius: var(--radius);
-    width: 240px;
+    width: 260px;
     transition: border-color 120ms, width 200ms;
   }
   .files-toolbar .search:focus-within {
-    border-color: var(--accent); width: 320px;
+    border-color: var(--accent); width: 340px;
     background: var(--surface);
   }
   .files-toolbar .search input {
@@ -365,7 +365,7 @@
     border-radius: var(--radius);
   }
   .seg-toggle button {
-    width: 30px; height: 26px; display: grid; place-items: center;
+    width: 34px; height: 30px; display: grid; place-items: center;
     border-radius: 5px;
     color: var(--text-muted);
   }
@@ -373,13 +373,13 @@
 
   .files-body {
     flex: 1; overflow-y: auto;
-    padding: 20px 28px 80px;
+    padding: 24px 32px 84px;
   }
   .files-body::-webkit-scrollbar { width: 10px; }
   .files-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
 
   .files-section-label {
-    font-size: 11px; font-weight: 600; color: var(--text-muted);
+    font-size: 12px; font-weight: 600; color: var(--text-muted);
     text-transform: uppercase; letter-spacing: 0.06em;
     margin: 18px 0 12px;
   }
@@ -387,14 +387,14 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
   }
 
   .card {
     position: relative;
     display: flex; flex-direction: column; gap: 6px;
-    padding: 14px; min-height: 110px;
+    padding: 17px; min-height: 126px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -438,7 +438,7 @@
   .card-actions button:hover { background: var(--surface-3); color: var(--text); }
 
   .card-icon {
-    width: 36px; height: 36px;
+    width: 42px; height: 42px;
     border-radius: 8px;
     display: grid; place-items: center;
     margin-top: 4px;
@@ -446,14 +446,14 @@
   .card-folder-icon { background: transparent; }
 
   .card-title {
-    font-size: 13px; font-weight: 500; color: var(--text);
+    font-size: 14px; font-weight: 500; color: var(--text);
     line-height: 1.35;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: auto;
   }
   .card-meta {
-    font-size: 11.5px; color: var(--text-faint);
+    font-size: 12.5px; color: var(--text-faint);
     display: flex; align-items: center; gap: 6px;
   }
   .card-folder-badge {
@@ -477,8 +477,8 @@
     grid-template-columns: 32px 28px 1fr 160px 130px 90px 80px;
     align-items: center;
     gap: 12px;
-    padding: 10px 14px;
-    font-size: 13px;
+    padding: 12px 16px;
+    font-size: 14px;
     border-bottom: 1px solid var(--border);
     cursor: pointer;
     transition: background 100ms;
@@ -568,7 +568,7 @@
   }
   .chat-thread::-webkit-scrollbar { width: 10px; }
   .chat-thread::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
-  .chat-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  .chat-inner { max-width: 900px; margin: 0 auto; padding: 0 16px; }
   .msg-row {
     display: flex; gap: 12px; margin: 18px 0;
   }
@@ -688,10 +688,10 @@
 
   .composer-wrap {
     flex-shrink: 0;
-    padding: 0 24px 18px;
+    padding: 0 16px 18px;
   }
   .context-strip {
-    max-width: 760px; margin: 0 auto 8px;
+    max-width: 900px; margin: 0 auto 8px;
     display: flex; align-items: center; gap: 10px;
     font-size: 11.5px; color: var(--text-faint);
     padding: 0 4px;
@@ -702,7 +702,7 @@
   .context-strip .link:hover { color: var(--accent); }
 
   .composer {
-    max-width: 760px; margin: 0 auto;
+    max-width: 900px; margin: 0 auto;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 14px;
@@ -836,7 +836,7 @@
   .landing-brandbar { display: flex; align-items: center; gap: 10px; }
   .landing-brandbar .word {
     font-family: 'Poppins', 'Inter', sans-serif;
-    font-weight: 800; font-size: 23.5px; letter-spacing: -0.01em;
+    font-weight: 700; font-size: 27px; letter-spacing: -0.01em;
   }
 
   .landing-pitch { margin: auto 0; max-width: 560px; }
