@@ -16,10 +16,35 @@ const savePrefs = (p) => {
   try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {}
 };
 
+// --- URL routing -----------------------------------------------------------
+// The app is a single page, but we mirror the current location into the address
+// bar so folders and chats are deep-linkable and survive a refresh / Back button
+// (like opening a folder in Google Drive lands you on its own URL):
+//   /              → files view, root
+//   /folder/<id>   → files view, inside a folder
+//   /chat/<id>     → a specific chat
+function parseRoute(pathname) {
+  const m = (pathname || '/').match(/^\/(chat|folder)\/(.+?)\/*$/);
+  if (m) {
+    const id = decodeURIComponent(m[2]);
+    if (m[1] === 'chat') return { view: 'chat', chatId: id, folderId: null };
+    return { view: 'files', chatId: null, folderId: id };
+  }
+  return { view: 'files', chatId: null, folderId: null };
+}
+function routePath(view, folderId, chatId) {
+  if (view === 'chat' && chatId) return `/chat/${encodeURIComponent(chatId)}`;
+  if (folderId) return `/folder/${encodeURIComponent(folderId)}`;
+  return '/';
+}
+
 function App() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
-  const [view, setView] = React.useState('files'); // 'files' | 'chat'
-  const [activeChatId, setActiveChatId] = React.useState(null);
+  // Seed the initial view/folder/chat from the URL so a refresh or a shared link
+  // opens straight to the right place.
+  const initialRoute = parseRoute(window.location.pathname);
+  const [view, setView] = React.useState(initialRoute.view); // 'files' | 'chat'
+  const [activeChatId, setActiveChatId] = React.useState(initialRoute.chatId);
   const [sidebarTab, setSidebarTab] = React.useState('folders');
   const [sidebarWidth, setSidebarWidth] = React.useState(264);
 
@@ -32,7 +57,7 @@ function App() {
   const [user, setUser] = React.useState(null);
   const [authChecked, setAuthChecked] = React.useState(false);
 
-  const [currentFolderId, setCurrentFolderId] = React.useState(null);
+  const [currentFolderId, setCurrentFolderId] = React.useState(initialRoute.folderId);
   const [viewMode, setViewMode] = React.useState('grid');
   const [sortBy, setSortBy] = React.useState('modified');
   const [sortDir, setSortDir] = React.useState('desc');
@@ -155,6 +180,42 @@ function App() {
     const stored = loadPrefs();
     savePrefs({ ...stored, defaultProvider: prefs.defaultProvider, defaultModel: prefs.defaultModel, sendOnEnter: prefs.sendOnEnter });
   }, [prefs]);
+
+  // Mirror the active view/folder/chat into the URL. Each distinct location gets
+  // its own history entry so Back/Forward and refresh behave like real pages.
+  React.useEffect(() => {
+    const path = routePath(view, currentFolderId, activeChatId);
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, '', path);
+    }
+  }, [view, currentFolderId, activeChatId]);
+
+  // Back/forward buttons: restore the view/folder/chat encoded in the URL.
+  // Setting state here matches the new location, so the effect above won't push
+  // a duplicate entry.
+  React.useEffect(() => {
+    const onPop = () => {
+      const r = parseRoute(window.location.pathname);
+      setView(r.view);
+      setActiveChatId(r.chatId);
+      setCurrentFolderId(r.folderId);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // Once data has loaded, a deep link pointing at a folder/chat that no longer
+  // exists (deleted, or not the current user's) falls back to a safe default.
+  React.useEffect(() => {
+    if (loading) return;
+    if (view === 'chat' && activeChatId && !sessions.some(s => s.id === activeChatId)) {
+      setActiveChatId(null);
+      setView('files');
+    }
+    if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
+      setCurrentFolderId(null);
+    }
+  }, [loading, sessions, folders, view, activeChatId, currentFolderId]);
 
   // Bump session metadata when a chat sees new messages — keeps the sidebar's
   // "last updated" ordering accurate within the session.
