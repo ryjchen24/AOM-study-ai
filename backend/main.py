@@ -8,8 +8,8 @@ from authlib.integrations.starlette_client import OAuth, OAuthError
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
+    FileResponse,
     JSONResponse,
-    PlainTextResponse,
     RedirectResponse,
     StreamingResponse,
 )
@@ -247,18 +247,9 @@ def sse(payload: dict) -> bytes:
 
 
 # ───────────────────────── routes ────────────────────────────────────────────
-
-@app.get("/", response_class=PlainTextResponse)
-def root() -> str:
-    return (
-        "AMO backend is running.\n\n"
-        "Endpoints:\n"
-        "  GET  /api/health   — health check\n"
-        "  /api/auth/google/* — Google sign-in (login / callback)\n"
-        "  /api/auth/logout|me — session logout / current user\n"
-        "  POST /api/chat     — streaming chat (used by the frontend)\n"
-    )
-
+# NOTE: "/" is intentionally NOT defined here — the SPA catch-all at the bottom
+# of this file serves the built frontend's index.html for "/" and all non-API
+# paths. It must stay last so every /api route is matched first.
 
 @app.get("/api/health")
 def health() -> dict:
@@ -625,3 +616,42 @@ async def chat(request: Request, req: ChatRequest, user: User = Depends(require_
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+# ───────────────────────── frontend (single-service deploy) ──────────────────
+# In production the built frontend (`frontend/dist`, produced by `npm run build`)
+# is served by this same FastAPI process, so the whole app is ONE deployable
+# service — one origin, so Google OAuth and the session cookie stay same-origin.
+#
+# This catch-all MUST be the LAST route declared: every /api/* route above is
+# registered first and therefore matches first. This only ever handles paths the
+# API didn't claim. Real files (index.html, *.jsx, assets) are served straight
+# from disk; anything else falls back to index.html so the client-side
+# history-API routes survive a hard refresh / deep link.
+FRONTEND_DIST = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+)
+
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    # Unknown API paths must 404 as JSON — never fall through to the HTML shell,
+    # or a mistyped fetch() would get a 200 + HTML and blow up on JSON.parse.
+    if full_path == "api" or full_path.startswith("api/"):
+        return JSONResponse({"error": "Not found."}, status_code=404)
+
+    index_html = os.path.join(FRONTEND_DIST, "index.html")
+    if full_path:
+        candidate = os.path.normpath(os.path.join(FRONTEND_DIST, full_path))
+        # Path-traversal guard: the resolved path must stay inside FRONTEND_DIST.
+        if candidate.startswith(FRONTEND_DIST + os.sep) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+
+    if not os.path.isfile(index_html):
+        # Frontend not built (e.g. `npm run build` didn't run). Fail loudly
+        # rather than 500 with a confusing FileResponse error.
+        return JSONResponse(
+            {"error": "Frontend not built. Run `npm run build` in frontend/."},
+            status_code=503,
+        )
+    return FileResponse(index_html)
