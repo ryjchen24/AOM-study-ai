@@ -1,5 +1,7 @@
 # AMO
 
+[![CI](https://github.com/ryjchen24/AOM-study-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/ryjchen24/AOM-study-ai/actions/workflows/ci.yml)
+
 **Live app → https://amo-xt5x.onrender.com**
 
 AMO is a full-stack AI study app. Most AI chat tools treat every conversation as a
@@ -113,6 +115,56 @@ The Vite dev server proxies `/api/*` to the backend on port 3001, so open
 
 ---
 
+## Tests & CI
+
+Every push and pull request runs the workflow in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml): backend tests against a
+throwaway Postgres, frontend checks, and a build of the deployment image.
+
+### Backend tests
+
+`pytest` + `pytest-asyncio` drive the real ASGI app in-process against a real
+Postgres — no mocked database. HTTP requests carry a genuine signed session
+cookie, so auth, per-user query scoping, and ownership checks are exercised end
+to end. Provider calls are the only thing stubbed (`httpx.MockTransport`), so the
+suite never touches a vendor API or spends a token.
+
+143 tests covering: auth and session cookies, folder/session/message
+CRUD, cross-user isolation (an IDOR test per by-id route), BYOK key storage and
+encryption-at-rest, `/api/chat` SSE streaming, per-provider wire formats, and the
+SPA catch-all's path-traversal guard.
+
+```bash
+cd backend
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# One-time: a throwaway database, separate from your dev one.
+createdb amo_test
+DATABASE_URL="postgresql://USER@localhost:5432/amo_test" prisma migrate deploy
+
+TEST_DATABASE_URL="postgresql://USER@localhost:5432/amo_test" pytest
+```
+
+The suite `TRUNCATE`s every table between tests, so `conftest.py` refuses to run
+unless the database name ends in `_test` — that guard is what stops a stray
+`DATABASE_URL` from wiping your dev or production data.
+
+### Frontend checks
+
+```bash
+cd frontend
+npm run check     # parses every public/*.jsx with Babel
+npm run build     # vite build
+```
+
+`public/*.jsx` is transpiled **in the browser** by `@babel/standalone` and merely
+copied by `vite build`, so nothing would otherwise catch a syntax error before it
+reached a user. `npm run check` parses each file with the same Babel version the
+browser loads, which is as close to a compiler as this frontend gets.
+
+---
+
 ## How it works
 
 - **Auth & isolation.** Google OAuth establishes identity; a signed, `HttpOnly`
@@ -128,7 +180,9 @@ The Vite dev server proxies `/api/*` to the backend on port 3001, so open
 ## Repository layout
 
 ```
-backend/     FastAPI app (main.py), providers.py, security.py, Prisma schema + migrations
-frontend/    React app — index.html + public/*.jsx, Vite config
-Dockerfile   Single-image build (Python + Node) used for deployment
+backend/            FastAPI app (main.py), providers.py, security.py, Prisma schema + migrations
+backend/tests/      pytest suite (integration against a real Postgres)
+frontend/           React app — index.html + public/*.jsx, Vite config
+.github/workflows/  CI: backend tests, frontend checks, Docker image build
+Dockerfile          Single-image build (Python + Node) used for deployment
 ```

@@ -7,5 +7,10 @@ backend/.venv/
 frontend/node_modules/
 frontend/dist/
 
+backend/tests/
+backend/pytest.ini
+backend/requirements-dev.txt
+
 .git/
 .gitignore
+.github/

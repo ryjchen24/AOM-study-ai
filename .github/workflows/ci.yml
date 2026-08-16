@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch cancels the run still going for the previous one —
+# no point burning minutes on a commit that's already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # conftest.py refuses to run against a database whose name doesn't end
+          # in `_test`, because the suite TRUNCATEs every table between tests.
+          POSTGRES_DB: studyai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studyai_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/studyai_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Match the Dockerfile's base image so CI can't pass on a version
+          # production never runs.
+          python-version: "3.12"
+          cache: pip
+          # Both files, because requirements-dev.txt pulls in requirements.txt
+          # with `-r` and a change to either should bust the cache.
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: prisma generate
+
+      - name: Apply migrations
+        working-directory: backend
+        # Same command the container runs on boot — so a migration that fails on
+        # a clean database fails here rather than during a Render deploy.
+        run: prisma migrate deploy
+
+      - name: Run tests
+        working-directory: backend
+        run: pytest -v
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20" # matches the Dockerfile's nodesource setup
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Syntax-check JSX
+        working-directory: frontend
+        # public/*.jsx is transpiled in the BROWSER by @babel/standalone and
+        # merely copied by `vite build`, so this parse is the only thing standing
+        # between a syntax error and a blank page in production.
+        run: npm run check
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the deployment image
+        # Render builds this exact Dockerfile. Building it on every PR means a
+        # broken image is caught here instead of at deploy time on main.
+        run: docker build -t amo:ci .
