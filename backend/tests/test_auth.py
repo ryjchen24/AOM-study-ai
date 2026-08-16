@@ -18,6 +18,7 @@ PROTECTED = [
     ("DELETE", "/api/sessions/some-id"),
     ("GET", "/api/sessions/some-id/messages"),
     ("POST", "/api/sessions/some-id/messages"),
+    ("PATCH", "/api/messages/some-id"),
     ("DELETE", "/api/messages"),
     ("GET", "/api/keys"),
     ("POST", "/api/keys"),

@@ -14,29 +14,29 @@ datasource db {
 }
 
 model User {
-  id          String    @id @default(cuid())
-  googleId    String    @unique // Google OIDC `sub` — stable identity match key
-  email       String    @unique
+  id          String       @id @default(cuid())
+  googleId    String       @unique // Google OIDC `sub` — stable identity match key
+  email       String       @unique
   displayName String
   avatarUrl   String? // Google `picture`; optional
   folders     Folder[]
   sessions    Session[]
   apiKeys     UserApiKey[]
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime     @default(now())
 }
 
 model Folder {
-  id        String @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
   color     String
   parentId  String?
-  parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id])
-  children  Folder[] @relation("FolderTree")
-  order     Int      @default(0)
+  parent    Folder?   @relation("FolderTree", fields: [parentId], references: [id])
+  children  Folder[]  @relation("FolderTree")
+  order     Int       @default(0)
   sessions  Session[]
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
 }
 
 model Session {
@@ -54,13 +54,19 @@ model Session {
 }
 
 model Message {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   sessionId   String
-  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  role        String   // "user" | "assistant"
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role        String // "user" | "assistant"
+  kind        String    @default("chat") // "chat" | "note" — a note is authored by the
+  //                                        user (role="user") but is free-written prose,
+  //                                        not a question: render it as a plain block and
+  //                                        don't send it to the model as Q&A history.
   text        String
   attachments Json?
-  createdAt   DateTime @default(now())
+  edited      Boolean   @default(false) // true once the user rewrote `text` by hand
+  editedAt    DateTime?
+  createdAt   DateTime  @default(now())
 }
 
 model UserApiKey {

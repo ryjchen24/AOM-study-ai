@@ -173,8 +173,19 @@ class SessionUpdate(BaseModel):
 
 class MessageCreate(BaseModel):
     role: Literal["user", "assistant"]
+    # "chat" is a Q&A turn; "note" is free-written prose the user dropped into
+    # the timeline. Defaults to "chat" so existing clients that don't send the
+    # field keep their current behavior.
+    kind: Literal["chat", "note"] = "chat"
     text: str
     attachments: list[Attachment] | None = None
+
+
+class MessageUpdate(BaseModel):
+    # Only `text` is editable. `kind` and `role` are set once at creation — a
+    # note can't be retyped into an assistant answer, which would let the user
+    # forge model output in the history sent back to the provider.
+    text: str
 
 
 class MessageDeleteBulk(BaseModel):
@@ -238,6 +249,19 @@ async def owned_session_or_404(session_id: str, user: User):
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     return session
+
+
+async def owned_message_or_404(message_id: str, user: User):
+    # Messages carry no userId of their own — ownership is inherited from the
+    # parent session, so the filter has to reach through the relation. Same
+    # relation filter the bulk delete uses, and the same 404-not-403 rule: a
+    # message that isn't yours is indistinguishable from one that doesn't exist.
+    message = await prisma.message.find_first(
+        where={"id": message_id, "session": {"is": {"userId": user.id}}}
+    )
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return message
 
 
 # ───────────────────────── SSE helpers ───────────────────────────────────────
@@ -442,9 +466,15 @@ async def list_messages(session_id: str, user: User = Depends(require_user)):
 @app.post("/api/sessions/{session_id}/messages")
 async def create_message(session_id: str, req: MessageCreate, user: User = Depends(require_user)):
     await owned_session_or_404(session_id, user)
+    # A note is always the user's own writing. Rejecting role="assistant" +
+    # kind="note" keeps the two dimensions from drifting into nonsense states
+    # the frontend would have to defend against when rendering.
+    if req.kind == "note" and req.role != "user":
+        raise HTTPException(status_code=400, detail="A note must have role 'user'.")
     data: dict = {
         "sessionId": session_id,
         "role": req.role,
+        "kind": req.kind,
         "text": req.text,
     }
     if req.attachments:
@@ -458,6 +488,32 @@ async def create_message(session_id: str, req: MessageCreate, user: User = Depen
         data={"updatedAt": datetime.now(timezone.utc)},
     )
     return message
+
+@app.patch("/api/messages/{message_id}")
+async def update_message(message_id: str, req: MessageUpdate, user: User = Depends(require_user)):
+    # Rewrites a message's text in place. Used for both halves of Part 5: the
+    # user editing their own note, and the user editing an AI answer so the
+    # saved note reads the way they want instead of the model's first draft.
+    message = await owned_message_or_404(message_id, user)
+    updated = await prisma.message.update(
+        where={"id": message_id},
+        data={
+            "text": req.text,
+            # `edited` is what drives the "edited" label in the UI, so it's set
+            # on any successful write — including one that happens to store the
+            # same text. Sticky by design: once edited, always flagged.
+            "edited": True,
+            "editedAt": datetime.now(timezone.utc),
+        },
+    )
+    # Editing is activity: bump the parent session so "last modified" ordering
+    # in the sidebar reflects it, exactly like posting a new message does.
+    await prisma.session.update(
+        where={"id": message.sessionId},
+        data={"updatedAt": datetime.now(timezone.utc)},
+    )
+    return updated
+
 
 @app.delete("/api/messages")
 async def delete_messages(req: MessageDeleteBulk, user: User = Depends(require_user)):

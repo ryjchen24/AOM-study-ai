@@ -1,3 +1,5 @@
+import asyncio
+
 from test_sessions import create_session
 
 
@@ -49,6 +51,137 @@ async def test_message_without_attachments_stores_null(alice):
     assert (await alice.get(f"/api/sessions/{session['id']}/messages")).json()[0][
         "attachments"
     ] is None
+
+
+async def test_new_message_defaults_to_an_unedited_chat(alice):
+    session = await create_session(alice)
+    created = (await post_message(alice, session["id"])).json()
+    assert created["kind"] == "chat"
+    assert created["edited"] is False
+    assert created["editedAt"] is None
+
+    listed = (await alice.get(f"/api/sessions/{session['id']}/messages")).json()[0]
+    assert (listed["kind"], listed["edited"], listed["editedAt"]) == ("chat", False, None)
+
+
+async def test_create_a_note(alice):
+    session = await create_session(alice)
+    resp = await post_message(alice, session["id"], kind="note", text="my own notes")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "note"
+    assert body["role"] == "user"
+    assert body["edited"] is False
+
+
+async def test_a_note_cannot_be_authored_by_the_assistant(alice):
+    session = await create_session(alice)
+    resp = await post_message(alice, session["id"], kind="note", role="assistant")
+    assert resp.status_code == 400
+    assert "role 'user'" in resp.json()["detail"]
+
+
+async def test_unknown_kind_is_422(alice):
+    session = await create_session(alice)
+    assert (await post_message(alice, session["id"], kind="scribble")).status_code == 422
+
+
+async def test_notes_and_chats_share_one_timeline(alice):
+    session = await create_session(alice)
+    await post_message(alice, session["id"], text="question")
+    await post_message(alice, session["id"], kind="note", text="my aside")
+    await post_message(alice, session["id"], role="assistant", text="answer")
+
+    listed = (await alice.get(f"/api/sessions/{session['id']}/messages")).json()
+    assert [(m["kind"], m["text"]) for m in listed] == [
+        ("chat", "question"),
+        ("note", "my aside"),
+        ("chat", "answer"),
+    ]
+
+
+async def test_edit_an_assistant_answer(alice):
+    session = await create_session(alice)
+    original = (await post_message(alice, session["id"], role="assistant", text="draft")).json()
+
+    resp = await alice.patch(f"/api/messages/{original['id']}", json={"text": "my rewrite"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["text"] == "my rewrite"
+    assert body["edited"] is True
+    assert body["editedAt"] is not None
+    assert body["role"] == "assistant"
+    assert body["kind"] == "chat"
+
+
+async def test_edit_persists(alice):
+    session = await create_session(alice)
+    msg = (await post_message(alice, session["id"], kind="note", text="first draft")).json()
+    await alice.patch(f"/api/messages/{msg['id']}", json={"text": "second draft"})
+
+    listed = (await alice.get(f"/api/sessions/{session['id']}/messages")).json()
+    assert listed[0]["text"] == "second draft"
+    assert listed[0]["edited"] is True
+    assert listed[0]["kind"] == "note"
+
+
+async def test_edit_cannot_change_role_or_kind(alice):
+    session = await create_session(alice)
+    msg = (await post_message(alice, session["id"], kind="note", text="mine")).json()
+
+    resp = await alice.patch(
+        f"/api/messages/{msg['id']}",
+        json={"text": "still mine", "role": "assistant", "kind": "chat"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "user"
+    assert resp.json()["kind"] == "note"
+
+
+async def test_edit_to_empty_text_is_allowed(alice):
+    session = await create_session(alice)
+    msg = (await post_message(alice, session["id"], kind="note", text="typed then cleared")).json()
+    resp = await alice.patch(f"/api/messages/{msg['id']}", json={"text": ""})
+    assert resp.status_code == 200
+    assert resp.json()["text"] == ""
+
+
+async def test_edit_without_text_is_422(alice):
+    session = await create_session(alice)
+    msg = (await post_message(alice, session["id"])).json()
+    assert (await alice.patch(f"/api/messages/{msg['id']}", json={})).status_code == 422
+
+
+async def test_editing_a_missing_message_is_404(alice):
+    assert (await alice.patch("/api/messages/nope", json={"text": "x"})).status_code == 404
+
+
+async def test_edit_bumps_the_parent_session(alice):
+    session = await create_session(alice)
+    msg = (await post_message(alice, session["id"], text="hi")).json()
+    before = (await alice.get("/api/sessions")).json()[0]["updatedAt"]
+
+    await asyncio.sleep(0.01)
+    await alice.patch(f"/api/messages/{msg['id']}", json={"text": "edited"})
+
+    after = (await alice.get("/api/sessions")).json()[0]["updatedAt"]
+    assert after > before
+
+
+async def test_cannot_edit_another_users_message(auth_client, make_user):
+    user_a, user_b = await make_user(), await make_user()
+    async with auth_client(user_a) as a:
+        session = await create_session(a)
+        victim = (await post_message(a, session["id"], text="A's words")).json()
+
+    async with auth_client(user_b) as b:
+        resp = await b.patch(f"/api/messages/{victim['id']}", json={"text": "tampered"})
+        assert resp.status_code == 404
+
+    async with auth_client(user_a) as a:
+        listed = (await a.get(f"/api/sessions/{session['id']}/messages")).json()
+        assert listed[0]["text"] == "A's words"
+        assert listed[0]["edited"] is False
 
 
 async def test_bulk_delete(alice):
