@@ -15,6 +15,12 @@
 <script src="https://unpkg.com/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/dompurify@3.1.6/dist/purify.min.js" integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a" crossorigin="anonymous"></script>
+<!-- HTML → Markdown, for saving a WYSIWYG-edited answer back to the markdown
+     that Message.text stores (the model reads it, and Export writes it out).
+     The GFM plugin adds tables/strikethrough/task lists, which plain Turndown
+     would otherwise flatten into unformatted text on save. -->
+<script src="https://unpkg.com/turndown@7.2.0/dist/turndown.js" integrity="sha384-OGauEFaI5hnS8jXK4qdSGShAUAObMBKoLXgcL1ORhRh7ulx5jPZH35qVpacIEA4Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js" integrity="sha384-2TroN1N6OfLQ+K4qttptnIfMREzUlMa3hW/nZqDZXv7Sm9BkESfGEupDEqCbzyRl" crossorigin="anonymous"></script>
 <style>
   :root {
     /* Light theme tokens */
@@ -713,16 +719,24 @@
     display: flex; gap: 4px;
   }
 
-  /* Editing an AI answer in place: the textarea takes over the bubble's box so
-     the layout doesn't jump between rendered and raw views. */
-  .msg-edit-area {
-    display: block; width: 100%; box-sizing: border-box;
-    background: var(--bg); color: var(--text);
-    border: 1px solid var(--accent); border-radius: 8px;
-    padding: 8px 10px; margin: 0;
-    font: inherit; font-size: 13.5px; line-height: 1.55;
-    resize: none; outline: none; overflow: hidden;
-    white-space: pre-wrap;
+  /* Editing an AI answer in place. The rendered bubble itself becomes the
+     editor, so formatting stays visible and nothing reflows on entry — only a
+     focus ring appears. */
+  .msg-bubble.editing {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 12px;
+    cursor: text;
+  }
+  .msg-bubble.editing:focus { outline: 2px solid var(--accent); }
+  /* Rendered math is atomic while editing — selectable and deletable as a
+     unit, but not typeable-into, so its markup can't be corrupted. */
+  .math-atom { display: inline-block; }
+  div.math-atom { display: block; }
+  .msg-bubble.editing .math-atom {
+    border-radius: 4px;
+    background: var(--accent-soft);
+    padding: 0 2px;
   }
   .msg-edit-bar {
     display: flex; align-items: center; gap: 6px;

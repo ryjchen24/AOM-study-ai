@@ -8,8 +8,22 @@ function escapeHtml(s) {
 // rendered the way Claude renders them. Bad TeX is shown inline in red rather
 // than throwing (throwOnError:false), so one typo can't blank the whole message.
 function renderMath(tex, display) {
-  if (!window.katex) return escapeHtml((display ? '$$' : '$') + tex + (display ? '$$' : '$'));
-  return window.katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+  const raw = (display ? '$$' : '$') + tex + (display ? '$$' : '$');
+  if (!window.katex) return escapeHtml(raw);
+  let inner;
+  try {
+    inner = window.katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+  } catch (e) {
+    return escapeHtml(raw);
+  }
+  // Wrapped so the ORIGINAL TeX survives a WYSIWYG edit. KaTeX's rendered DOM
+  // is dozens of nested spans that no HTML→markdown converter can turn back
+  // into `$x^2$`, so htmlToMarkdown reads data-tex instead. contenteditable
+  // =false makes the formula one atomic object in the editor: you can select
+  // or delete it as a unit, but you can't corrupt its internals by typing.
+  const tag = display ? 'div' : 'span';
+  return `<${tag} class="math-atom" data-tex="${escapeHtml(tex)}" `
+       + `data-display="${display ? '1' : '0'}" contenteditable="false">${inner}</${tag}>`;
 }
 
 const mathExtension = {
@@ -69,7 +83,75 @@ function renderMarkdown(text) {
   } catch (e) {
     return renderPlain(text);
   }
-  return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
+  return sanitize(html);
+}
+
+// DOMPurify strips unknown attributes, which would drop the math atoms' TeX
+// source and their contenteditable=false guard — so both are allowlisted here.
+const PURIFY_CONFIG = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-display'] };
+
+function sanitize(html) {
+  return window.DOMPurify ? window.DOMPurify.sanitize(html, PURIFY_CONFIG) : html;
+}
+
+// ── HTML → Markdown ────────────────────────────────────────────────────────
+// Answers are edited as rendered rich text, but Message.text stores markdown —
+// it's what gets sent back to the model as history and what Export writes out.
+// So an edit has to be serialized back to markdown on save.
+let turndownService = null;
+function ensureTurndown() {
+  if (turndownService) return turndownService;
+  if (!window.TurndownService) return null;
+
+  const td = new window.TurndownService({
+    headingStyle: 'atx',          // "## Heading", matching how models emit it
+    hr: '---',
+    bulletListMarker: '-',
+    codeBlockStyle: 'fenced',
+    emDelimiter: '*',
+  });
+
+  // Tables, strikethrough and task lists. Without this plugin Turndown
+  // flattens a GFM table into a run of unformatted text — silent data loss on
+  // the first save of any answer containing one.
+  if (window.turndownPluginGfm && window.turndownPluginGfm.gfm) {
+    td.use(window.turndownPluginGfm.gfm);
+  }
+
+  // Math round-trips through data-tex, never through the rendered KaTeX DOM.
+  td.addRule('mathAtom', {
+    filter: (node) => node.nodeType === 1 && node.classList
+                      && node.classList.contains('math-atom'),
+    replacement: (_content, node) => {
+      const tex = node.getAttribute('data-tex') || '';
+      if (!tex) return '';
+      return node.getAttribute('data-display') === '1' ? `\n\n$$${tex}$$\n\n` : `$${tex}$`;
+    },
+  });
+
+  // Any bare KaTeX markup that arrived some other way (a paste, say) is
+  // dropped rather than dumped into the markdown as span soup.
+  td.addRule('strayKatex', {
+    filter: (node) => node.nodeType === 1 && node.classList
+                      && (node.classList.contains('katex') || node.classList.contains('katex-display')),
+    replacement: () => '',
+  });
+
+  turndownService = td;
+  return td;
+}
+
+// Returns null when Turndown isn't available or the conversion throws — callers
+// treat null as "can't safely save this" rather than writing lossy text.
+function htmlToMarkdown(html) {
+  const td = ensureTurndown();
+  if (!td) return null;
+  try {
+    return td.turndown(sanitize(html)).trim();
+  } catch (e) {
+    console.error('Failed to convert edited HTML to markdown', e);
+    return null;
+  }
 }
 
 // Builds the bubble HTML for a message loaded from the API (which only has
@@ -867,6 +949,8 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
               onNoteBlur={onNoteBlur}
               onDeleteNote={deleteNote}
               onSaveEdit={saveMessageEdit}
+              onEditError={() => setErrorMsg(
+                'Could not save that edit — the rich-text converter did not load. Reload the page and try again.')}
             />
           ))}
         </div>
@@ -1009,7 +1093,7 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
 }
 
 function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage,
-                autoFocusNoteKey, onNoteFocused, onNoteChange, onNoteBlur, onDeleteNote, onSaveEdit }) {
+                autoFocusNoteKey, onNoteFocused, onNoteChange, onNoteBlur, onDeleteNote, onSaveEdit, onEditError }) {
   const [hover, setHover] = React.useState(false);
 
   // Notes get no hover-highlight and none of the turn chrome — they're page
@@ -1042,7 +1126,7 @@ function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage,
         <Bubble m={turn.assistant} idx={turn.indices[turn.user ? 1 : 0]}
           onDelete={turn.user ? null : () => onDeleteMessage(turn.indices[0])}
           showDelete={hover && !turn.user}
-          onSaveEdit={onSaveEdit} />
+          onSaveEdit={onSaveEdit} onEditError={onEditError} />
       )}
       {turn.user && turn.assistant && hover && !turn.assistant.streaming && (
         <div className="turn-actions">
@@ -1110,15 +1194,25 @@ function NoteBlock({ m, autoFocus, onFocused, onChange, onBlur, onDelete }) {
   );
 }
 
-function Bubble({ m, idx, user, onDelete, showDelete, onSaveEdit }) {
+function Bubble({ m, idx, user, onDelete, showDelete, onSaveEdit, onEditError }) {
   const [hover, setHover] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState('');
-  const taRef = React.useRef(null);
+  const bodyRef = React.useRef(null);
 
   // Only AI answers are editable, and never mid-stream — the streaming loop
-  // rewrites that row's text on every token and would clobber the draft.
+  // rewrites that row's html on every token and would wipe out live edits.
   const canEdit = m.role === 'assistant' && !m.streaming && !!onSaveEdit;
+
+  // The rendered answer is edited IN PLACE via contentEditable rather than
+  // being swapped for a markdown textarea. Two reasons: you edit the formatting
+  // you can actually see, and because the DOM node is never replaced, the caret
+  // stays exactly where you double-clicked.
+  //
+  // `frozenHtmlRef` pins the html React renders for the duration of an edit. If
+  // React ever re-rendered this node with a different string mid-edit it would
+  // reset innerHTML and discard everything typed.
+  const frozenHtmlRef = React.useRef(m.html);
+  const shownHtml = editing ? frozenHtmlRef.current : m.html;
 
   // Save, Cancel, Escape and blur can all fire for one edit — Save's click and
   // the blur it triggers, for instance. `handledRef` makes whichever lands
@@ -1126,34 +1220,62 @@ function Bubble({ m, idx, user, onDelete, showDelete, onSaveEdit }) {
   // cancelled session can't swallow the following one's save.
   const handledRef = React.useRef(false);
 
-  const startEdit = () => {
+  const startEdit = (preserveCaret) => {
+    if (!canEdit || editing) return;
+
+    // A double-click has already placed the caret (and selected a word) inside
+    // this node. Stash that range so focusing the editor can put it back —
+    // focus() on a contentEditable otherwise jumps to the start.
+    let saved = null;
+    if (preserveCaret) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) saved = sel.getRangeAt(0).cloneRange();
+    }
+
     handledRef.current = false;
-    setDraft(m.text || '');
+    frozenHtmlRef.current = m.html;
     setEditing(true);
+
+    requestAnimationFrame(() => {
+      const el = bodyRef.current;
+      if (!el) return;
+      // Browsers default to <div> on Enter; <p> matches the surrounding markup
+      // and converts back to markdown paragraphs cleanly.
+      try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
+      el.focus({ preventScroll: true });
+      if (saved && el.contains(saved.startContainer)) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(saved);
+      }
+    });
   };
 
   const finish = (save) => {
     if (handledRef.current) return;
     handledRef.current = true;
+
+    if (!save) {
+      // Put the original rendering back before React takes the node over again.
+      if (bodyRef.current) bodyRef.current.innerHTML = frozenHtmlRef.current;
+      setEditing(false);
+      return;
+    }
+
+    // Read the DOM BEFORE dropping out of edit mode — React restores innerHTML
+    // from props on the next render, which would discard the edit.
+    const html = bodyRef.current ? bodyRef.current.innerHTML : '';
+    const markdown = htmlToMarkdown(html);
     setEditing(false);
-    if (save) onSaveEdit(m.id, draft);
+
+    if (markdown === null) {
+      // Turndown missing or blew up. Restore rather than save something lossy.
+      if (bodyRef.current) bodyRef.current.innerHTML = frozenHtmlRef.current;
+      onEditError && onEditError();
+      return;
+    }
+    onSaveEdit(m.id, markdown);
   };
-
-  React.useLayoutEffect(() => {
-    if (!editing) return;
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [editing, draft]);
-
-  React.useEffect(() => {
-    if (!editing) return;
-    const el = taRef.current;
-    if (!el) return;
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }, [editing]);
 
   return (
     <div className={`msg-row ${m.role}`}
@@ -1165,43 +1287,42 @@ function Bubble({ m, idx, user, onDelete, showDelete, onSaveEdit }) {
         <div className="msg-avatar ai"><I.sparkle size={13} /></div>
       )}
       <div style={{ position: 'relative', maxWidth: '86%', flex: editing ? 1 : null }}>
-        {editing ? (
-          <div className="msg-bubble" style={{ maxWidth: '100%' }}>
-            <textarea
-              ref={taRef}
-              className="msg-edit-area"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => finish(true)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-              }}
-            />
-            <div className="msg-edit-bar">
-              <span className="msg-edit-hint">Markdown · Esc to cancel</span>
-              <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12 }}
-                      onMouseDown={(e) => e.preventDefault()} onClick={() => finish(false)}>
-                Cancel
-              </button>
-              <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12,
-                                                      background: 'var(--accent)', color: 'white',
-                                                      borderColor: 'var(--accent)' }}
-                      onMouseDown={(e) => e.preventDefault()} onClick={() => finish(true)}>
-                Save
-              </button>
-            </div>
+        <div
+          ref={bodyRef}
+          className={`msg-bubble${editing ? ' editing' : ''}`}
+          style={{ maxWidth: '100%' }}
+          contentEditable={editing}
+          suppressContentEditableWarning
+          spellCheck={editing}
+          title={!editing && canEdit ? 'Double-click to edit' : undefined}
+          onDoubleClick={canEdit ? () => startEdit(true) : undefined}
+          onBlur={editing ? () => finish(true) : undefined}
+          onKeyDown={editing ? (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+          } : undefined}
+          dangerouslySetInnerHTML={{ __html: shownHtml }}
+        />
+        {editing && (
+          <div className="msg-edit-bar">
+            <span className="msg-edit-hint">Editing · Esc to cancel</span>
+            <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12 }}
+                    onMouseDown={(e) => e.preventDefault()} onClick={() => finish(false)}>
+              Cancel
+            </button>
+            <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12,
+                                                    background: 'var(--accent)', color: 'white',
+                                                    borderColor: 'var(--accent)' }}
+                    onMouseDown={(e) => e.preventDefault()} onClick={() => finish(true)}>
+              Save
+            </button>
           </div>
-        ) : (
-          <>
-            <div className="msg-bubble" style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: m.html }} />
-            {m.edited && <span className="msg-edited-tag">edited</span>}
-          </>
         )}
+        {!editing && m.edited && <span className="msg-edited-tag">edited</span>}
         {!editing && showDelete && onDelete && (
           <button className="msg-del" onClick={onDelete} title="Delete this message"><I.trash size={11}/></button>
         )}
         {!editing && hover && canEdit && (
-          <button className="msg-del" title="Edit this answer" onClick={startEdit}
+          <button className="msg-del" title="Edit this answer" onClick={() => startEdit(false)}
                   style={{ right: (showDelete && onDelete) ? 20 : -6 }}>
             <I.pencil size={11}/>
           </button>
