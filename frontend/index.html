@@ -686,6 +686,54 @@
   }
   .msg-del:hover { color: var(--danger); border-color: oklch(82% 0.09 27); }
 
+  /* Note cells. Deliberately NOT bubble-shaped: a note is the user's own
+     writing dropped into the timeline, so it reads as page text with a margin
+     rule beside it, not as a chat turn. No avatar, no role label. */
+  .note-row {
+    display: flex; gap: 12px; margin: 18px 0;
+    padding-left: 40px; /* lines the text up with the AI bubbles' left edge */
+  }
+  .note-block {
+    flex: 1; position: relative;
+    border-left: 2px solid var(--border);
+    padding: 2px 0 2px 14px;
+  }
+  .note-row:focus-within .note-block { border-left-color: var(--accent); }
+  .note-block textarea {
+    display: block; width: 100%;
+    background: transparent; border: 0; outline: none; resize: none;
+    padding: 0; margin: 0;
+    font: inherit; font-size: 14px; line-height: 1.6;
+    color: var(--text);
+    overflow: hidden; /* height is driven by JS to fit content */
+  }
+  .note-block textarea::placeholder { color: var(--text-faint); font-style: italic; }
+  .note-actions {
+    position: absolute; top: -2px; right: 0;
+    display: flex; gap: 4px;
+  }
+
+  /* Editing an AI answer in place: the textarea takes over the bubble's box so
+     the layout doesn't jump between rendered and raw views. */
+  .msg-edit-area {
+    display: block; width: 100%; box-sizing: border-box;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--accent); border-radius: 8px;
+    padding: 8px 10px; margin: 0;
+    font: inherit; font-size: 13.5px; line-height: 1.55;
+    resize: none; outline: none; overflow: hidden;
+    white-space: pre-wrap;
+  }
+  .msg-edit-bar {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 8px;
+  }
+  .msg-edit-hint { font-size: 11.5px; color: var(--text-faint); margin-right: auto; }
+  .msg-edited-tag {
+    font-size: 11px; color: var(--text-faint);
+    margin-top: 4px; display: block;
+  }
+
   .composer-wrap {
     flex-shrink: 0;
     padding: 0 16px 18px;

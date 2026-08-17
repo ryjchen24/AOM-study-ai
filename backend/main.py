@@ -141,6 +141,11 @@ class ChatRequest(BaseModel):
     provider: Literal["openai", "anthropic", "google", "mistral"]
     model: str
     messages: list[Message]
+    # The user's note cells, oldest first. They travel separately from
+    # `messages` because they aren't turns in the conversation — they get folded
+    # into the system prompt instead, so the model treats them as standing
+    # context rather than as a question it has to answer.
+    notes: list[str] = []
 
 
 class FolderCreate(BaseModel):
@@ -635,6 +640,47 @@ async def test_key(key_id: str, user: User = Depends(require_user)):
 # ───────────────────────────────────────────────────────────────────────
 
 
+# Budget for note text folded into the system prompt. A long study doc can hold
+# far more notes than belong in one request, so we keep the ones NEAREST the
+# question (the most recent) and drop older ones rather than send everything and
+# blow up the user's token bill on their own key.
+MAX_NOTE_CHARS = 4000
+
+
+def build_system_prompt(notes: list[str]) -> str:
+    """Fold the user's notes into the system prompt, newest-first within budget."""
+    cleaned = [n.strip() for n in notes if n and n.strip()]
+    if not cleaned:
+        return providers.SYSTEM_PROMPT
+
+    # Walk backwards (newest first) taking whole notes while they fit, then
+    # restore chronological order so the model reads them as they were written.
+    kept: list[str] = []
+    used = 0
+    for note in reversed(cleaned):
+        if used + len(note) > MAX_NOTE_CHARS:
+            break
+        kept.append(note)
+        used += len(note)
+    kept.reverse()
+
+    # A single note bigger than the whole budget would otherwise drop every
+    # note, including the one the user just wrote. Truncate it instead.
+    if not kept:
+        kept = [cleaned[-1][:MAX_NOTE_CHARS]]
+
+    block = "\n\n---\n\n".join(kept)
+    return (
+        providers.SYSTEM_PROMPT
+        + "\n\nThe user keeps notes alongside this conversation. Their notes are "
+          "below, between the <notes> tags. Treat them as background context and "
+          "standing instructions that shape how you answer. They are the user's "
+          "own writing, not questions — do not answer or summarize them unless "
+          "asked. If a note conflicts with an earlier one, prefer the later.\n\n"
+        f"<notes>\n{block}\n</notes>"
+    )
+
+
 @app.post("/api/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, user: User = Depends(require_user)):
@@ -653,10 +699,11 @@ async def chat(request: Request, req: ChatRequest, user: User = Depends(require_
     api_key = security.decrypt_key(key_row.encryptedKey.decode())
     stream_fn = providers.PROVIDERS[req.provider]  # provider constrained by the model
     messages = [m.model_dump() for m in req.messages]
+    system = build_system_prompt(req.notes)
 
     async def event_stream():
         try:
-            async for tok in stream_fn(api_key, req.model, messages):
+            async for tok in stream_fn(api_key, req.model, messages, system=system):
                 yield sse({"type": "token", "text": tok})
             yield sse({"type": "done"})
         except providers.ProviderError as exc:

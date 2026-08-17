@@ -246,10 +246,16 @@ function App() {
       `*Model: ${s.model || ''}*`,
       `*Exported: ${new Date().toISOString()}*`,
       '',
-      ...messages.map(m => {
-        const role = m.role === 'user' ? '**You**' : '**Assistant**';
+      // `m.text` is the source of truth, so an answer the user rewrote exports
+      // as their version, not the model's first draft.
+      ...messages.flatMap(m => {
         const body = m.text || htmlToText(m.html || '');
-        return `${role}\n\n${body}\n`;
+        // Notes are the user's own writing, not a turn in the conversation —
+        // they export as plain prose with no speaker label, which is what makes
+        // the exported file read as study notes instead of a chat transcript.
+        if (m.kind === 'note') return body.trim() ? [`${body}\n`] : [];
+        const role = m.role === 'user' ? '**You**' : '**Assistant**';
+        return [`${role}\n\n${body}\n`];
       }),
     ].join('\n');
     const blob = new Blob([md], { type: 'text/markdown' });

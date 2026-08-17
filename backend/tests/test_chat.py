@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+import main
 import providers
 from test_keys import ANTHROPIC_KEY, OPENAI_KEY, add_key
 
@@ -142,6 +143,82 @@ async def test_a_malformed_model_id_never_reaches_the_network(alice, mock_upstre
     resp = await chat(alice, model="../../evil")
     assert sse_events(resp.text)[-1]["type"] == "error"
     assert "request" not in recorded
+
+
+def test_no_notes_leaves_the_system_prompt_alone():
+    assert main.build_system_prompt([]) == providers.SYSTEM_PROMPT
+    assert main.build_system_prompt(["", "   ", "\n"]) == providers.SYSTEM_PROMPT
+
+
+def test_notes_are_folded_into_the_system_prompt():
+    system = main.build_system_prompt(["focus on lecture 3", "prefer short answers"])
+    assert system.startswith(providers.SYSTEM_PROMPT)
+    assert "focus on lecture 3" in system
+    assert "prefer short answers" in system
+    assert "<notes>" in system and "</notes>" in system
+
+
+def test_notes_keep_chronological_order():
+    system = main.build_system_prompt(["first", "second", "third"])
+    assert system.index("first") < system.index("second") < system.index("third")
+
+
+def test_oldest_notes_are_dropped_when_over_budget():
+    old = "O" * (main.MAX_NOTE_CHARS - 10)
+    recent = "R" * 50
+    system = main.build_system_prompt([old, recent])
+    assert recent in system
+    assert old not in system
+
+
+def test_a_single_oversized_note_is_truncated_not_dropped():
+    huge = "H" * (main.MAX_NOTE_CHARS * 3)
+    system = main.build_system_prompt([huge])
+    assert "H" in system
+    assert len(system) < len(providers.SYSTEM_PROMPT) + main.MAX_NOTE_CHARS + 600
+
+
+async def test_notes_reach_the_provider_as_system_context(alice, mock_upstream):
+    await add_key(alice, provider="anthropic", key=ANTHROPIC_KEY)
+    recorded = mock_upstream(lambda req: httpx.Response(200, text=anthropic_stream("ok")))
+
+    await chat(alice, notes=["focus on lecture 3"])
+
+    body = json.loads(recorded["request"].content)
+    assert "focus on lecture 3" in body["system"]
+    # Notes must NOT become conversation turns — that's what would break
+    # Anthropic's strict user/assistant alternation.
+    assert all("focus on lecture 3" not in json.dumps(m) for m in body["messages"])
+
+
+async def test_notes_reach_openai_as_a_system_message(alice, mock_upstream):
+    await add_key(alice, provider="openai", key=OPENAI_KEY)
+    recorded = mock_upstream(lambda req: httpx.Response(200, text="data: [DONE]\n\n"))
+
+    await chat(alice, provider="openai", model="gpt-4o", notes=["cite sources"])
+
+    body = json.loads(recorded["request"].content)
+    assert body["messages"][0]["role"] == "system"
+    assert "cite sources" in body["messages"][0]["content"]
+
+
+async def test_omitting_notes_is_valid_and_sends_the_plain_prompt(alice, mock_upstream):
+    await add_key(alice, provider="anthropic", key=ANTHROPIC_KEY)
+    recorded = mock_upstream(lambda req: httpx.Response(200, text=anthropic_stream("ok")))
+
+    # Older clients don't send the field at all.
+    resp = await alice.post("/api/chat", json={
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "messages": [{"role": "user", "text": "hi"}],
+    })
+    assert resp.status_code == 200
+    assert json.loads(recorded["request"].content)["system"] == providers.SYSTEM_PROMPT
+
+
+async def test_notes_must_be_strings(alice):
+    await add_key(alice, provider="anthropic", key=ANTHROPIC_KEY)
+    assert (await chat(alice, notes=[{"text": "nope"}])).status_code == 422
 
 
 async def test_streaming_headers_disable_buffering(alice, mock_upstream):

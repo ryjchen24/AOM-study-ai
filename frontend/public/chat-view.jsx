@@ -90,12 +90,16 @@ function renderMessageHtml(role, text, atts) {
 
 function dbMessageToUi(m) {
   const atts = Array.isArray(m.attachments) ? m.attachments : [];
+  const kind = m.kind || 'chat';
   return {
     id: m.id,
     role: m.role,
+    kind,
+    edited: !!m.edited,
     text: m.text || '',
     attachments: atts,
-    html: renderMessageHtml(m.role, m.text || '', atts),
+    // Notes are edited as raw text, so they never need pre-rendered HTML.
+    html: kind === 'note' ? '' : renderMessageHtml(m.role, m.text || '', atts),
   };
 }
 
@@ -107,6 +111,8 @@ function estimateTokens(text, attachments = []) {
   const imageEst = attachments.filter(a => a.kind === 'image').length * 300;
   return Math.max(0, Math.ceil(charBudget / 4) + imageEst);
 }
+
+const NOTES_CONTEXT_KEY = 'studyai:notesInContext';
 
 const TEXT_FILE_EXTS = new Set([
   'txt','md','markdown','csv','tsv','json','log','yaml','yml','xml','html','htm',
@@ -209,6 +215,19 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
   const [confirmTurn, setConfirmTurn] = React.useState(null); // turn index pending delete
   const [confirmTrim, setConfirmTrim] = React.useState(false);
 
+  // Whether note text is folded into the system prompt on send. Persisted the
+  // same way the app persists its other UI prefs, so the choice survives a
+  // reload — it changes what the model sees and what the request costs, so it
+  // shouldn't silently reset.
+  const [includeNotes, setIncludeNotes] = React.useState(() => {
+    try { return localStorage.getItem(NOTES_CONTEXT_KEY) !== '0'; } catch { return true; }
+  });
+  const toggleIncludeNotes = () => setIncludeNotes(v => {
+    const next = !v;
+    try { localStorage.setItem(NOTES_CONTEXT_KEY, next ? '1' : '0'); } catch {}
+    return next;
+  });
+
   // Composer state
   const [input, setInput] = React.useState('');
   const [attachments, setAttachments] = React.useState([]);
@@ -294,13 +313,20 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
     onSessionActivity?.(session.id, { count: next.filter(m => m.role !== 'system').length });
   };
 
-  // Group consecutive [user, assistant] pairs into "turns" so we can delete them together.
+  // Group consecutive [user, assistant] pairs into "turns" so we can delete them
+  // together. A note is never half of a Q&A pair — it's the user's own writing
+  // that happens to sit at that point in the timeline — so it always stands
+  // alone, even when an assistant message follows it.
   const turns = React.useMemo(() => {
     const out = [];
     let i = 0;
     while (i < messages.length) {
       const m = messages[i];
-      if (m.role === 'user' && messages[i + 1]?.role === 'assistant') {
+      if (m.kind === 'note') {
+        out.push({ note: m, indices: [i] });
+        i += 1;
+      } else if (m.role === 'user' && messages[i + 1]?.role === 'assistant'
+                 && messages[i + 1]?.kind !== 'note') {
         out.push({ user: m, assistant: messages[i + 1], indices: [i, i + 1] });
         i += 2;
       } else {
@@ -349,6 +375,170 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
       setErrorMsg('Could not delete that message.');
     }
   };
+
+  // Rewrite an AI answer in place. Optimistic: the bubble re-renders from the
+  // new text immediately and rolls back if the PATCH fails, so a dropped
+  // request can't leave the screen showing text that was never saved.
+  // Keyed by message id, not array index: a stream finishing or a delete
+  // elsewhere in the thread can shift indices between render and save.
+  const saveMessageEdit = async (messageId, text) => {
+    const arr = editsRef.current[session.id] || [];
+    const m = arr.find(x => x.id === messageId);
+    if (!m || text === m.text) return;
+
+    persistMessages(arr.map(x => (x.id === messageId
+      ? { ...x, text, edited: true, html: renderMessageHtml(x.role, text, x.attachments) }
+      : x)));
+
+    try {
+      const res = await fetch(`/api/messages/${messageId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      console.error('Failed to save edit', e);
+      // Put the original text back rather than leave an unsaved edit on screen.
+      const now = editsRef.current[session.id] || [];
+      persistMessages(now.map(x => (x.id === messageId
+        ? { ...x, text: m.text, edited: m.edited, html: m.html }
+        : x)));
+      setErrorMsg('Could not save that edit — the original text has been restored.');
+    }
+  };
+
+  // ── Note cells ──────────────────────────────────────────────────────────
+  // A note starts life local-only, with no DB row. It's created on the server
+  // the first time it holds non-blank text (from the typing debounce or from
+  // blur), so abandoning an empty note never persists a blank row — and a
+  // browser crash mid-note leaves nothing behind either.
+  //
+  // `noteKey` is a stable per-note identity that survives the temp-id → DB-id
+  // swap, so save state can't be orphaned by that swap mid-keystroke.
+  const noteSaveRef = React.useRef({});   // noteKey -> { serverId, queued, lastSaved, running }
+  const noteTimersRef = React.useRef({}); // noteKey -> debounce timer id
+  const [focusNoteKey, setFocusNoteKey] = React.useState(null);
+
+  const noteState = (key) => {
+    const map = noteSaveRef.current;
+    if (!map[key]) map[key] = { serverId: null, queued: null, lastSaved: null, running: false };
+    return map[key];
+  };
+
+  // Serialized writer: one request per note at a time, re-running while newer
+  // text is queued. Without the `running` guard, a debounce firing during an
+  // in-flight create would POST twice and produce two rows for one note.
+  const flushNote = async (key) => {
+    const st = noteState(key);
+    if (st.running) return; // the loop below will pick up whatever it queued
+    st.running = true;
+    try {
+      while (st.queued !== null) {
+        const text = st.queued;
+        st.queued = null;
+        if (text === st.lastSaved) continue;
+
+        if (!st.serverId) {
+          if (!text.trim()) continue; // nothing worth creating yet
+          const res = await fetch(`/api/sessions/${session.id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: 'user', kind: 'note', text }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const saved = await res.json();
+          st.serverId = saved.id;
+          // Adopt the DB id so deletes (single / turn / trim) target the row.
+          const arr = (editsRef.current[session.id] || []).map(
+            m => (m.noteKey === key ? { ...m, id: saved.id } : m));
+          editsRef.current[session.id] = arr;
+          setMessages(arr);
+        } else {
+          const res = await fetch(`/api/messages/${st.serverId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        }
+        st.lastSaved = text;
+      }
+    } catch (e) {
+      console.error('Failed to save note', e);
+      setErrorMsg('Could not save that note.');
+    } finally {
+      st.running = false;
+    }
+  };
+
+  const addNote = () => {
+    const key = `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const note = {
+      id: key, noteKey: key, role: 'user', kind: 'note',
+      text: '', edited: false, attachments: [], html: '',
+    };
+    persistMessages([...(editsRef.current[session.id] || messages), note]);
+    setFocusNoteKey(key);
+  };
+
+  const onNoteChange = (key, text) => {
+    const arr = (editsRef.current[session.id] || []).map(
+      m => (m.noteKey === key ? { ...m, text } : m));
+    editsRef.current[session.id] = arr;
+    setMessages(arr);
+
+    noteState(key).queued = text;
+    clearTimeout(noteTimersRef.current[key]);
+    noteTimersRef.current[key] = setTimeout(() => flushNote(key), 700);
+  };
+
+  const onNoteBlur = async (key) => {
+    clearTimeout(noteTimersRef.current[key]);
+    const arr = editsRef.current[session.id] || [];
+    const note = arr.find(m => m.noteKey === key);
+    if (!note) return;
+
+    if (!note.text.trim()) {
+      // Blurred while empty: drop it rather than keep a blank row around.
+      await deleteNote(key);
+      return;
+    }
+
+    noteState(key).queued = note.text;
+    await flushNote(key);
+  };
+
+  // Deleting a note has to tear down its save state first. Otherwise a debounce
+  // queued from the last keystroke fires after the row is gone and re-creates
+  // it on the server — the note comes back on the next reload.
+  const deleteNote = async (key) => {
+    clearTimeout(noteTimersRef.current[key]);
+    delete noteTimersRef.current[key];
+    const st = noteSaveRef.current[key];
+    delete noteSaveRef.current[key];
+
+    persistMessages((editsRef.current[session.id] || []).filter(m => m.noteKey !== key));
+
+    // Only hit the API if the note ever made it to the server.
+    if (!st?.serverId) return;
+    try {
+      const res = await fetch('/api/messages', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [st.serverId] }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      console.error('Failed to delete note', e);
+      setErrorMsg('Could not delete that note.');
+    }
+  };
+
+  // Don't let a pending debounce fire after the component is gone.
+  React.useEffect(() => () => {
+    Object.values(noteTimersRef.current).forEach(clearTimeout);
+  }, []);
 
   const onAttachClick = () => fileInputRef.current?.click();
 
@@ -431,14 +621,23 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
     setErrorMsg(null);
 
     // Build the API payload — strip presentational fields, keep role/text/attachments.
+    // Notes are the user's own writing, not questions, so they're excluded from
+    // the Q&A history. This is also load-bearing, not just tidy: Anthropic
+    // requires strictly alternating user/assistant roles, and a note sitting
+    // between two turns would send two user messages in a row and 400.
     const payload = {
       provider,
       model,
-      messages: next.slice(0, -1).map(m => ({
+      messages: next.slice(0, -1).filter(m => m.kind !== 'note').map(m => ({
         role: m.role,
         text: m.text || '',
         attachments: m.attachments || [],
       })),
+      // Notes ride along separately; the backend folds them into the system
+      // prompt so they act as standing context instead of a question.
+      notes: includeNotes
+        ? next.filter(m => m.kind === 'note').map(m => m.text || '').filter(Boolean)
+        : [],
     };
 
     const controller = new AbortController();
@@ -642,6 +841,8 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
   };
 
   const canSend = (input.trim().length > 0 || attachments.length > 0) && !streaming;
+  const noteCount = messages.filter(m => m.kind === 'note').length;
+  const contextCount = messages.length - noteCount;
 
   return (
     <div className="chat-view">
@@ -660,6 +861,12 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
             <Turn key={t.indices.join('-')} turn={t} turnIdx={ti} user={user}
               onAskDelete={() => setConfirmTurn(ti)}
               onDeleteMessage={removeMessage}
+              autoFocusNoteKey={focusNoteKey}
+              onNoteFocused={() => setFocusNoteKey(null)}
+              onNoteChange={onNoteChange}
+              onNoteBlur={onNoteBlur}
+              onDeleteNote={deleteNote}
+              onSaveEdit={saveMessageEdit}
             />
           ))}
         </div>
@@ -675,7 +882,20 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
           )}
           <span>{window.resolveModel(provider, model).model.name}</span>
           <span className="sep"/>
-          <span>{messages.length} messages in context</span>
+          {/* Counts only what actually goes to the model — notes are excluded
+              from the payload, so counting them here would overstate context. */}
+          <span>{contextCount} {contextCount === 1 ? 'message' : 'messages'} in context</span>
+          {noteCount > 0 && (
+            <span className="link" onClick={toggleIncludeNotes}
+                  title={includeNotes
+                    ? 'Your notes are sent to the model as context. Click to stop sending them.'
+                    : 'Your notes are not sent to the model. Click to include them as context.'}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                           color: includeNotes ? 'var(--accent)' : 'var(--text-faint)' }}>
+              {includeNotes ? <I.check size={11} strokeWidth={2.5} /> : <I.x size={11} />}
+              {noteCount} {noteCount === 1 ? 'note' : 'notes'}
+            </span>
+          )}
           <span className="right">
             <span className="link" onClick={() => messages.length > 0 && setConfirmTrim(true)}
               style={messages.length === 0 ? { opacity: 0.4, cursor: 'default' } : null}>
@@ -734,6 +954,11 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
                     style={listening ? { color: 'var(--danger)' } : null}>
               <I.mic size={15} />
             </button>
+            <button className="topbar-btn" title="Add a note to this chat"
+                    onClick={addNote} disabled={streaming}
+                    style={{ height: 28, padding: '0 8px', fontSize: 12.5, gap: 5 }}>
+              <I.plus size={13} /> Note
+            </button>
             <ModelPicker provider={provider} model={model}
               providersWithKeys={providersWithKeys}
               onSelectModel={onSelectModel} onOpenSettings={onOpenSettings}
@@ -768,7 +993,11 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
       {confirmTrim && (
         <ConfirmModal
           title="Trim context?"
-          body={<>This will clear every message in this chat. This can't be undone.</>}
+          body={noteCount > 0
+            // Notes are hand-written and unrecoverable, so say so plainly
+            // rather than let "clear every message" quietly take them too.
+            ? <>This will clear every message in this chat, <strong>including your {noteCount === 1 ? 'note' : `${noteCount} notes`}</strong>. This can't be undone.</>
+            : <>This will clear every message in this chat. This can't be undone.</>}
           confirmText="Clear messages"
           danger
           onCancel={() => setConfirmTrim(false)}
@@ -779,8 +1008,24 @@ function ChatView({ session, folders, user, provider, model, providersWithKeys, 
   );
 }
 
-function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage }) {
+function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage,
+                autoFocusNoteKey, onNoteFocused, onNoteChange, onNoteBlur, onDeleteNote, onSaveEdit }) {
   const [hover, setHover] = React.useState(false);
+
+  // Notes get no hover-highlight and none of the turn chrome — they're page
+  // text, not a conversational exchange.
+  if (turn.note) {
+    return (
+      <NoteBlock m={turn.note}
+        autoFocus={autoFocusNoteKey === turn.note.noteKey}
+        onFocused={onNoteFocused}
+        onChange={(text) => onNoteChange(turn.note.noteKey, text)}
+        onBlur={() => onNoteBlur(turn.note.noteKey)}
+        onDelete={() => onDeleteNote(turn.note.noteKey)}
+      />
+    );
+  }
+
   return (
     <div className="turn"
          onMouseEnter={() => setHover(true)}
@@ -796,7 +1041,8 @@ function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage }) {
       {turn.assistant && (
         <Bubble m={turn.assistant} idx={turn.indices[turn.user ? 1 : 0]}
           onDelete={turn.user ? null : () => onDeleteMessage(turn.indices[0])}
-          showDelete={hover && !turn.user} />
+          showDelete={hover && !turn.user}
+          onSaveEdit={onSaveEdit} />
       )}
       {turn.user && turn.assistant && hover && !turn.assistant.streaming && (
         <div className="turn-actions">
@@ -810,18 +1056,155 @@ function Turn({ turn, turnIdx, user, onAskDelete, onDeleteMessage }) {
   );
 }
 
-function Bubble({ m, idx, user, onDelete, showDelete }) {
+// A free-written note. Always an editable textarea — there's no read mode to
+// click into, so writing feels like a document rather than like editing a chat
+// message. Height tracks content so the cell grows as you type.
+function NoteBlock({ m, autoFocus, onFocused, onChange, onBlur, onDelete }) {
+  const ref = React.useRef(null);
+  const [hover, setHover] = React.useState(false);
+
+  const resize = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
+  React.useLayoutEffect(resize, [m.text]);
+
+  React.useEffect(() => {
+    if (!autoFocus) return;
+    ref.current?.focus();
+    onFocused?.();
+  }, [autoFocus]);
+
   return (
-    <div className={`msg-row ${m.role}`}>
+    <div className="note-row"
+         onMouseEnter={() => setHover(true)}
+         onMouseLeave={() => setHover(false)}>
+      <div className="note-block">
+        <textarea
+          ref={ref}
+          rows={1}
+          value={m.text}
+          placeholder="Write a note…"
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
+          onKeyDown={(e) => {
+            // Enter inserts a newline (the default). Escape just leaves the
+            // note — blur runs the same save path as clicking away.
+            if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur(); }
+          }}
+        />
+        {hover && (
+          <div className="note-actions">
+            <button className="msg-del" style={{ position: 'static' }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={onDelete} title="Delete this note">
+              <I.trash size={11}/>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Bubble({ m, idx, user, onDelete, showDelete, onSaveEdit }) {
+  const [hover, setHover] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState('');
+  const taRef = React.useRef(null);
+
+  // Only AI answers are editable, and never mid-stream — the streaming loop
+  // rewrites that row's text on every token and would clobber the draft.
+  const canEdit = m.role === 'assistant' && !m.streaming && !!onSaveEdit;
+
+  // Save, Cancel, Escape and blur can all fire for one edit — Save's click and
+  // the blur it triggers, for instance. `handledRef` makes whichever lands
+  // first the only one that counts, and it resets on the next edit so a
+  // cancelled session can't swallow the following one's save.
+  const handledRef = React.useRef(false);
+
+  const startEdit = () => {
+    handledRef.current = false;
+    setDraft(m.text || '');
+    setEditing(true);
+  };
+
+  const finish = (save) => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    setEditing(false);
+    if (save) onSaveEdit(m.id, draft);
+  };
+
+  React.useLayoutEffect(() => {
+    if (!editing) return;
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [editing, draft]);
+
+  React.useEffect(() => {
+    if (!editing) return;
+    const el = taRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [editing]);
+
+  return (
+    <div className={`msg-row ${m.role}`}
+         onMouseEnter={() => setHover(true)}
+         onMouseLeave={() => setHover(false)}>
       {m.role === 'user' ? (
         <UserAvatar user={user} className="msg-avatar" style={{ background: 'var(--c-coral)' }} />
       ) : (
         <div className="msg-avatar ai"><I.sparkle size={13} /></div>
       )}
-      <div style={{ position: 'relative', maxWidth: '86%' }}>
-        <div className="msg-bubble" style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: m.html }} />
-        {showDelete && onDelete && (
+      <div style={{ position: 'relative', maxWidth: '86%', flex: editing ? 1 : null }}>
+        {editing ? (
+          <div className="msg-bubble" style={{ maxWidth: '100%' }}>
+            <textarea
+              ref={taRef}
+              className="msg-edit-area"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => finish(true)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+              }}
+            />
+            <div className="msg-edit-bar">
+              <span className="msg-edit-hint">Markdown · Esc to cancel</span>
+              <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12 }}
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => finish(false)}>
+                Cancel
+              </button>
+              <button className="topbar-btn" style={{ height: 26, padding: '0 10px', fontSize: 12,
+                                                      background: 'var(--accent)', color: 'white',
+                                                      borderColor: 'var(--accent)' }}
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => finish(true)}>
+                Save
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="msg-bubble" style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: m.html }} />
+            {m.edited && <span className="msg-edited-tag">edited</span>}
+          </>
+        )}
+        {!editing && showDelete && onDelete && (
           <button className="msg-del" onClick={onDelete} title="Delete this message"><I.trash size={11}/></button>
+        )}
+        {!editing && hover && canEdit && (
+          <button className="msg-del" title="Edit this answer" onClick={startEdit}
+                  style={{ right: (showDelete && onDelete) ? 20 : -6 }}>
+            <I.pencil size={11}/>
+          </button>
         )}
       </div>
     </div>
